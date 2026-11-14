@@ -579,6 +579,11 @@ The deployment job runs migrations (expand, then contract), provider
 migrations, ES256 key setup, internal certificates, client registry
 and rolling restart.
 
+Startup and readiness require the schema needed by the running application
+version, not exact Alembic-head equality. Migration CI verifies the expected
+head and that expand migrations preserve compatibility with the previous
+running version.
+
 **Integration suite.** The existing suite runs against real production-mode
 Ory, the edge and browser engines on every push and PR. Each stage adds
 the protocol and adapter tests for its requirements, including token-hook

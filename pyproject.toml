@@ -1,0 +1,29 @@
+[project]
+name = "shell"
+version = "0.0.0"
+requires-python = "==3.13.*"
+dependencies = []
+
+[dependency-groups]
+dev = ["uv==0.11.23", "ruff==0.15.7", "pyright==1.1.408", "pytest==9.0.2", "pre-commit==4.5.1", "import-linter==2.11", "pyyaml==6.0.3", "types-pyyaml==6.0.12.20250915"]
+
+[tool.uv]
+required-version = "==0.11.23"
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pyright]
+typeCheckingMode = "strict"
+include = ["apps/api/src", "scripts", "tests"]
+extraPaths = ["apps/api/src", "."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "apps/api/src"]
+addopts = "--strict-markers --strict-config"
+markers = ["req(*ids, kind, part): requirement verification association"]
+junit_family = "legacy"

@@ -509,7 +509,7 @@ per IP; the edge, which can't tell requests from submissions, limits all flow
 submissions. The realm-wide cap stops a flood from many addresses from using up the 
 relay's quota, which would stop every code sign-in. Over-limit codes are dropped 
 with a 2xx, logged and counted; transient send failures return 5xx so the courier 
-retries, up to `courier.message_retries`. Shell enforces AUTH-CODE-007 through 
+retries, up to `courier.message_retries`. Shell enforces AUTH-CODE-008 through 
 provider controls or its server-side forwarding checks (section 5), with no public 
 bypass. A courier 2xx alone does not authorize a code. CAPTCHA, if abuse calls for 
 it (spec, Later), goes in our sign-in screen or at the edge: Kratos has it only in 
@@ -575,8 +575,7 @@ the integration suite → OpenAPI and catalogue checks → image build
 and scans (fixable high or critical findings fail). The existing build/scanning
 tooling generates standard SBOM artifacts from each built image and checks dependency
 and image sources against configured trusted repositories (NFR-024).
-Checks join CI
-as their subjects are built and run on every push and pull request.
+Checks join CI as their subjects are built and run on every push and pull request.
 The deployment job runs migrations (expand, then contract), provider
 migrations, ES256 key setup, internal certificates, client registry
 and rolling restart.
@@ -614,11 +613,13 @@ paths without their query strings (NFR-010).
 point-in-time recovery where offered, encrypted and in the region, with one
 full restore tested before launch; Hydra's system secret, which encrypts
 the signing keys, belongs to the recovery kit. Restore verification follows 
-NFR-007 and NFR-025. Keep recovery evidence outside the databases being 
-restored; reconcile disablements and staff removals, clear device records 
-and revoke provider sessions and grants before reopening. If reconciliation 
-cannot be verified, keep the deployment closed. Secrets list the active value 
-first, so rotation is prepend, deploy, drop. Signing keys rotate every 90 days: 
+NFR-007 and NFR-025. Shipped logs record disablements, staff removals and 
+credential removals with the affected Shell ID. Before reopening, reconcile 
+these changes, clear device records and revoke provider sessions and grants. 
+Affected accounts stay disabled until uncertain credentials are resolved; 
+if reconciliation cannot be verified, keep the deployment closed. 
+Secrets list the active value first, so rotation is prepend, deploy, drop. 
+Signing keys rotate every 90 days: 
 add an ES256 key, which Hydra signs with at once while publishing the old one; 
 delete the old key an hour after its last token expires, or at once on 
 compromise, never emptying a key set (Hydra would generate an RS256 key, 
@@ -666,7 +667,7 @@ the same configuration that CI runs.
 Only these can't be settled in advance; each is checked by hand once its
 subject exists (roadmap):
 
-- Email-code admission cannot be bypassed (AUTH-CODE-007); staff enrollment 
+- Email-code admission cannot be bypassed (AUTH-CODE-008); staff enrollment 
   codes enforce binding and attempt limits (AUTH-IDP-031). A failed check 
   stops dependent work.
 - Settings hooks distinguish staff passkey additions and removals and Google

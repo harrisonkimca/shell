@@ -43,9 +43,9 @@ def fixture_repo(tmp_path: Path) -> Path:
         (ROOT / ".importlinter")
         .read_text()
         .replace(
-            "containers = \n    shell_api.shared\n    shell_api.contexts.identity",
+            "containers =\n    shell_api.shared\n    shell_api.contexts.identity",
             (
-                "containers = \n    shell_api.shared\n    shell_api.contexts.identity\n"
+                "containers =\n    shell_api.shared\n    shell_api.contexts.identity\n"
                 "    shell_api.contexts.example"
             ),
         )

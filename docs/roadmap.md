@@ -34,14 +34,14 @@ architecture.md, "spec §n" section n of spec/auth.md.
 | Stage | Delivers | IDs |
 |---|---|---|
 | 0 | Foundation and workflow | 4 |
-| 1 | Ory in production mode, configured as code | 29 |
-| 2 | Auth adapters and the signed-in session | 38 |
+| 1 | Ory in production mode, configured as code | 30 |
+| 2 | Auth adapters and the signed-in session | 39 |
 | 3 | Identity context, gates and staff | 24 |
 | 4 | Our sign-in screen | 24 |
 | 5 | Account settings, devices and deactivation | 28 |
 | 6 | Administration | 9 |
 | 7 | Shell is deployment-ready | 11 |
-| 8 | Launch hardening | 8 |
+| 8 | Launch hardening | 9 |
 
 ## Stage 0. Foundation and workflow
 
@@ -134,8 +134,8 @@ so every later stage builds against the real provider.
 - The reference UI for each realm, in development only.
 - Workforce passkey RP ID and allowed origin.
 - `EmailSender` behind the provider's HTTP courier, with English and Korean
-  code templates, its email adapter and limits, sending to Mailpit. Its
-  contract suite runs on the fake and real adapter. Notification delivery
+  code templates, its email adapter, limits and code admission, sending to Mailpit. 
+  Its contract suite runs on the fake and real adapter. Notification delivery
   arrives in stage 3.
 - The edge: each realm's host routed to its public paths only, per-IP
   limits on flow submissions, and the client IP it sets
@@ -146,7 +146,7 @@ so every later stage builds against the real provider.
 - Startup checks refusing realms that share an issuer, key URL or audience.
 
 **Requirements.** AUTH-ASSURE-001; AUTH-IDP-002, AUTH-IDP-005, AUTH-IDP-011–012,
-AUTH-IDP-014, AUTH-IDP-020, AUTH-IDP-024, AUTH-IDP-029; AUTH-CODE-001–006;
+AUTH-IDP-014, AUTH-IDP-020, AUTH-IDP-024, AUTH-IDP-029; AUTH-CODE-001–006, AUTH-CODE-008;
 AUTH-LIMIT-001–005; AUTH-PASSKEY-013, AUTH-PASSKEY-018; AUTH-SESSION-004;
 AUTH-CLIENT-002–003, AUTH-CLIENT-011; AUTH-STAFF-008; AUTH-ADMIN-008; AUTH-ERROR-004.
 
@@ -157,6 +157,10 @@ AUTH-CLIENT-002–003, AUTH-CLIENT-011; AUTH-STAFF-008; AUTH-ADMIN-008; AUTH-ERR
   its exact issuer, with no manual step.
 - Provider-only integration tests use test fixtures; complete application
   sign-ins wait for Shell's consent step in stage 2.
+- Spike, before dependent code flows: prove AUTH-CODE-008's `admission` 
+  part against the production-mode provider, using provider controls or 
+  Shell's unavoidable forwarding checks. If neither enforces it, stop until 
+  the design is corrected.
 - Spike: user verification. Record whether the workforce provider refuses
   a passkey response without the user-verified flag in its browser and API
   flows. If not, build and prove Shell's unavoidable server-side check in
@@ -219,7 +223,7 @@ Staff fixtures are test-only, never seed data.
 - Two CI checks that every later stage passes: a scan of the integration
   suite's logs for personal data, and a schema check for personal fields.
 
-**Requirements.** AUTH-IDP-009, AUTH-IDP-015–017, AUTH-IDP-030; AUTH-LIMIT-011;
+**Requirements.** AUTH-IDP-009, AUTH-IDP-015–017, AUTH-IDP-030–031; AUTH-LIMIT-011;
 AUTH-ACCT-017; AUTH-DEVICE-002–003; AUTH-SESSION-001–003, AUTH-SESSION-005–006;
 AUTH-TOKEN-001–007, AUTH-TOKEN-009–010; AUTH-WEB-001–004, AUTH-WEB-006–007;
 AUTH-CLIENT-007–008; AUTH-AUDIT-002–004, AUTH-AUDIT-006; AUTH-PRIVACY-008; NFR-002,
@@ -234,6 +238,8 @@ NFR-010.
 - AUTH-SCOPE-001: `hook-secret` unit tests refuse missing and wrong secrets;
   `hook-edge` integration tests prove public-edge isolation even with a valid
   secret. Extend both checks as hooks are added.
+- Prove AUTH-IDP-031's `guess-resistance` part with test-only provider 
+  enrollment flows before dependent staff enrollment work.
 - Runs the parts that couldn't run earlier: AUTH-IDP-012 (code reuse),
   NFR-013 (keys). Verify the workforce sign-in path with test fixtures.
   Run complete application token flows here, not in stage 1.
@@ -291,6 +297,8 @@ AUTH-NOTIFY-009; AUTH-ERROR-005.
   gates; prove staff passkey sign-in and restricted enrollment with software
   authenticators before using the provisioning script. Physical-device
   checks run in stage 5.
+- Complete AUTH-CODE-008 (`fresh-sign-in`) and AUTH-IDP-031 (`provisioning`) 
+  against the real stack.
 - Runs the parts that couldn't run earlier: AUTH-SESSION-001–003 (fresh
   sign-in without extending the absolute limit); AUTH-AUDIT-004 (purge);
   AUTH-ACCT-017 (own-session sign-out); AUTH-TOKEN-007 and AUTH-TOKEN-009
@@ -460,8 +468,9 @@ configuration alone and every connection encrypted.
   deploy job, and the startup checks that refuse plaintext.
 - Public TLS on every host; verify security headers on all deployed hosts.
 - Backups of every database, the providers' included.
-- Logs shipped off the host, metrics with their alerts, the sending
-  domain's mail records, and the app's least-privilege workload identity.
+- Logs shipped off the host, including recovery evidence (arch §13); 
+  metrics with their alerts, the sending domain's mail records, and 
+  the app's least-privilege workload identity.
 
 **Requirements.** AUTH-WEB-005; AUTH-STAFF-011; AUTH-ADMIN-009; AUTH-NOTIFY-007;
 AUTH-PRIVACY-010; NFR-006, NFR-008, NFR-012, NFR-014–015, NFR-023.
@@ -492,16 +501,18 @@ recoverable and fast enough before any fork launches from it.
 - At least two admins, each with two passkeys.
 - The rehearsals and reviews below.
 
-**Requirements.** AUTH-STAFF-009–010; NFR-001, NFR-004–005, NFR-007, NFR-022;
-AUTH-A11Y-002.
+**Requirements.** AUTH-STAFF-009–010; 
+NFR-001, NFR-004–005, NFR-007, NFR-022, NFR-025; AUTH-A11Y-002.
 
 **Exit criteria.**
 
 - Load test (arch §15) on the reference deployment. Pass: the targets of
-  NFR-022, NFR-004 and NFR-005 are met, and stopping one `api` replica fails only its
-  in-flight requests (NFR-001).
-- Restore rehearsal. Pass: a full restore of every database permits a
-  restored account to sign in; record the duration (NFR-007).
+  NFR-022, NFR-004 and NFR-005 are met, and stopping one `api` replica 
+  fails only its in-flight requests (NFR-001).
+- Restore rehearsal. Pass: a full restore of every database permits an 
+  unaffected account to sign in afresh, disablements and staff and credential 
+  removals remain effective, and pre-restore sessions and grants fail; record 
+  the duration (NFR-007, NFR-025).
 - Signing-key rotation rehearsal, by the procedure in arch §13. Pass:
   tokens signed by either key verify throughout (AUTH-TOKEN-010), and no
   key set is ever emptied.

@@ -199,15 +199,15 @@ one is out, and cost decides the rest). The default is Ory v26.2.0:
   JWKS and custom claims through a failing-closed token hook; zero-grace
   refresh rotation with family revocation; PKCE and ES256 client assertions.
 - **Administration and hooks:** disablement, enablement, session and grant
-  revocation, staff enrollment codes, consent and sign-out steps, no
-  automatic linking, email over HTTP with client IP and language, refusing
-  sign-up and settings hooks, and configurable settings windows.
-- **Done by Shell:** the resend gap, and server-side enforcement of user
-  verification for staff passkeys where the provider cannot enforce it.
-  Shell checks submissions before forwarding them, with no public bypass;
-  the provider still verifies the ceremony. Our screen also permits
-  security keys where Kratos's `passkey` method restricts authenticator
-  selection. Section 15 assigns the checks.
+  revocation, guess-limited staff enrollment codes, consent and sign-out 
+  steps, no automatic linking, email over HTTP with client IP and language, 
+  refusing sign-up and settings hooks, and configurable settings windows.
+- **Done by Shell:** code admission and the resend gap (section 11), and 
+  server-side enforcement of user verification for staff passkeys where the 
+  provider cannot enforce it. Shell checks submissions before forwarding them, 
+  with no public bypass; the provider still verifies the ceremony. Our screen 
+  also permits security keys where Kratos's `passkey` method restricts 
+  authenticator selection. Section 15 assigns the checks.
 
 Every retained capability must pass the spec's verification against the
 production-mode provider before dependent work. Historical trials do not
@@ -503,16 +503,17 @@ SPF, DKIM, DMARC at quarantine, and quota alerts.
 | Provider | Sign-in flow | Code lifetime; attempts per flow |
 
 Kratos counts attempts per flow, across resends, and has no resend gap, so
-`EmailSender` enforces the gap. The edge sets `True-Client-Ip`, which
-Kratos forwards with each email, so `EmailSender` also counts code
-requests and sign-ups per IP; the edge, which can't tell requests from
-submissions, limits all flow submissions. The realm-wide cap stops a flood from many
-addresses from using up the relay's quota, which would stop every code
-sign-in. Over-limit codes are dropped with
-a 2xx, logged and counted; transient send failures return 5xx so the
-courier retries, up to `courier.message_retries`. CAPTCHA, if abuse calls
-for it (spec, Later), goes in our sign-in screen or at the edge: Kratos
-has it only in Ory's enterprise build.
+`EmailSender` enforces the gap. The edge sets `True-Client-Ip`, which Kratos 
+forwards with each email, so `EmailSender` also counts code requests and sign-ups 
+per IP; the edge, which can't tell requests from submissions, limits all flow 
+submissions. The realm-wide cap stops a flood from many addresses from using up the 
+relay's quota, which would stop every code sign-in. Over-limit codes are dropped 
+with a 2xx, logged and counted; transient send failures return 5xx so the courier 
+retries, up to `courier.message_retries`. Shell enforces AUTH-CODE-008 through 
+provider controls or its server-side forwarding checks (section 5), with no public 
+bypass. A courier 2xx alone does not authorize a code. CAPTCHA, if abuse calls for 
+it (spec, Later), goes in our sign-in screen or at the edge: Kratos has it only in 
+Ory's enterprise build.
 
 | Threat | Mitigation | Residual risk |
 |---|---|---|
@@ -523,7 +524,8 @@ has it only in Ory's enterprise build.
 | Stolen or copied session | `HttpOnly`, CSP, short-lived tokens; fresh sign-in before Google changes, device revocations and deactivation; logged-out devices refused | Ungated actions until expiry or revocation |
 | CSRF, code injection, mix-up | Strict cookies, PKCE, `nonce` | None known |
 | Subscriber to admin | Realm separation | None known |
-| Enumeration, code guessing | Limits, generic screens | Code sign-in reveals unknown addresses, and may reveal disabled ones (section 15) |
+| Enumeration, code guessing | Limits, generic screens, unusable unsent codes | Code sign-in reveals unknown addresses, and may reveal disabled ones (section 15); at default limits, at most 50 guesses against each address's daily code budget (about 1 in 20,000) |
+| Staff enrollment-code guessing | Identity and flow binding, bounded attempts (AUTH-IDP-031) | Bounded guessing risk |
 | Rogue or phished staff | Passkeys, fresh passkey sign-in before high-risk actions, audit, confirmation, alerts on staff changes | Abuse within role |
 | Email outage | Queued retries | No code sign-ins or code confirmations; Google and staff passkey sign-ins still work |
 | Provider outage | Local verification | No new sign-ins |
@@ -573,8 +575,7 @@ the integration suite → OpenAPI and catalogue checks → image build
 and scans (fixable high or critical findings fail). The existing build/scanning
 tooling generates standard SBOM artifacts from each built image and checks dependency
 and image sources against configured trusted repositories (NFR-024).
-Checks join CI
-as their subjects are built and run on every push and pull request.
+Checks join CI as their subjects are built and run on every push and pull request.
 The deployment job runs migrations (expand, then contract), provider
 migrations, ES256 key setup, internal certificates, client registry
 and rolling restart.
@@ -611,13 +612,18 @@ paths without their query strings (NFR-010).
 **Backups and keys:** every database, the providers' included, daily with
 point-in-time recovery where offered, encrypted and in the region, with one
 full restore tested before launch; Hydra's system secret, which encrypts
-the signing keys, belongs to the recovery kit. Ordinary restore verification
-follows NFR-007. Secrets list the active
-value first, so rotation is prepend, deploy, drop. Signing keys rotate
-every 90 days: add an ES256 key, which Hydra signs with at once while
-publishing the old one; delete the old key an hour after its last token
-expires, or at once on compromise, never emptying a key set (Hydra would
-generate an RS256 key, which Shell refuses).
+the signing keys, belongs to the recovery kit. Restore verification follows 
+NFR-007 and NFR-025. Shipped logs record disablements, staff removals and 
+credential removals with the affected Shell ID. Before reopening, reconcile 
+these changes, clear device records and revoke provider sessions and grants. 
+Affected accounts stay disabled until uncertain credentials are resolved; 
+if reconciliation cannot be verified, keep the deployment closed. 
+Secrets list the active value first, so rotation is prepend, deploy, drop. 
+Signing keys rotate every 90 days: 
+add an ES256 key, which Hydra signs with at once while publishing the old one; 
+delete the old key an hour after its last token expires, or at once on 
+compromise, never emptying a key set (Hydra would generate an RS256 key, 
+which Shell refuses).
 
 ## 14. Import rules
 
@@ -661,6 +667,9 @@ the same configuration that CI runs.
 Only these can't be settled in advance; each is checked by hand once its
 subject exists (roadmap):
 
+- Email-code admission cannot be bypassed (AUTH-CODE-008); staff enrollment 
+  codes enforce binding and attempt limits (AUTH-IDP-031). A failed check 
+  stops dependent work.
 - Settings hooks distinguish staff passkey additions and removals and Google
   links and unlinks, identifying the affected credential.
 - The provider doesn't reveal a disabled account before its code is entered;

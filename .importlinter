@@ -1,0 +1,202 @@
+[importlinter]
+root_package = shell_api
+include_external_packages = True
+contract_types =
+    direct_layers: scripts.check.DirectLayers
+    direct_contexts: scripts.check.DirectContexts
+
+[importlinter:contract:1]
+name = Layers
+type = direct_layers
+containers =
+    shell_api.shared
+    shell_api.contexts.identity
+layers =
+    presentation | infrastructure
+    application
+    domain
+
+[importlinter:contract:2]
+name = Pure core
+type = forbidden
+source_modules =
+    shell_api.shared.domain
+    shell_api.shared.application
+    shell_api.contexts.*.domain
+    shell_api.contexts.*.application
+forbidden_modules =
+    fastapi
+    starlette
+    pydantic
+    pydantic_settings
+    sqlalchemy
+    asyncpg
+    alembic
+    redis
+    arq
+    httpx
+    authlib
+    jwt
+    jinja2
+    babel
+
+[importlinter:contract:3]
+name = Web
+type = forbidden
+source_modules =
+    shell_api
+forbidden_modules =
+    fastapi
+    starlette
+    pydantic
+allow_indirect_imports = True
+ignore_imports =
+    shell_api.shared.presentation -> fastapi
+    shell_api.shared.presentation.** -> fastapi
+    shell_api.contexts.*.presentation -> fastapi
+    shell_api.contexts.*.presentation.** -> fastapi
+    shell_api.core -> fastapi
+    shell_api.core.** -> fastapi
+    shell_api.shared.presentation -> starlette
+    shell_api.shared.presentation.** -> starlette
+    shell_api.contexts.*.presentation -> starlette
+    shell_api.contexts.*.presentation.** -> starlette
+    shell_api.core -> starlette
+    shell_api.core.** -> starlette
+    shell_api.shared.presentation -> pydantic
+    shell_api.shared.presentation.** -> pydantic
+    shell_api.contexts.*.presentation -> pydantic
+    shell_api.contexts.*.presentation.** -> pydantic
+    shell_api.core -> pydantic
+    shell_api.core.** -> pydantic
+    shell_api.shared.infrastructure -> pydantic
+    shell_api.shared.infrastructure.** -> pydantic
+    shell_api.contexts.*.infrastructure -> pydantic
+    shell_api.contexts.*.infrastructure.** -> pydantic
+unmatched_ignore_imports_alerting = none
+
+[importlinter:contract:4]
+name = Persistence
+type = forbidden
+source_modules =
+    shell_api
+forbidden_modules =
+    sqlalchemy
+    asyncpg
+    redis
+    arq
+allow_indirect_imports = True
+ignore_imports =
+    shell_api.shared.infrastructure -> sqlalchemy
+    shell_api.shared.infrastructure.** -> sqlalchemy
+    shell_api.contexts.*.infrastructure -> sqlalchemy
+    shell_api.contexts.*.infrastructure.** -> sqlalchemy
+    shell_api.shared.infrastructure -> asyncpg
+    shell_api.shared.infrastructure.** -> asyncpg
+    shell_api.contexts.*.infrastructure -> asyncpg
+    shell_api.contexts.*.infrastructure.** -> asyncpg
+    shell_api.shared.infrastructure -> redis
+    shell_api.shared.infrastructure.** -> redis
+    shell_api.core -> redis
+    shell_api.core.** -> redis
+    shell_api.shared.infrastructure -> arq
+    shell_api.shared.infrastructure.** -> arq
+    shell_api.core -> arq
+    shell_api.core.** -> arq
+unmatched_ignore_imports_alerting = none
+
+[importlinter:contract:5]
+name = Libraries
+type = forbidden
+source_modules =
+    shell_api
+forbidden_modules =
+    authlib
+    jwt
+    httpx
+    jinja2
+    babel
+allow_indirect_imports = True
+ignore_imports =
+    shell_api.contexts.identity.infrastructure.idp -> authlib
+    shell_api.contexts.identity.infrastructure.idp.** -> authlib
+    shell_api.contexts.identity.infrastructure.idp -> jwt
+    shell_api.contexts.identity.infrastructure.idp.** -> jwt
+    shell_api.shared.infrastructure -> httpx
+    shell_api.shared.infrastructure.** -> httpx
+    shell_api.contexts.*.infrastructure -> httpx
+    shell_api.contexts.*.infrastructure.** -> httpx
+    shell_api.shared.infrastructure.email -> jinja2
+    shell_api.shared.infrastructure.email.** -> jinja2
+    shell_api.shared.infrastructure.email -> babel
+    shell_api.shared.infrastructure.email.** -> babel
+unmatched_ignore_imports_alerting = none
+
+[importlinter:contract:6]
+name = Vendor code
+type = forbidden
+source_modules =
+    shell_api
+forbidden_modules =
+    shell_api.contexts.identity.infrastructure.idp.ory
+    shell_api.contexts.identity.presentation.ory
+allow_indirect_imports = True
+ignore_imports =
+    shell_api.core -> shell_api.contexts.identity.infrastructure.idp.ory
+    shell_api.core -> shell_api.contexts.identity.infrastructure.idp.ory.**
+    shell_api.core.** -> shell_api.contexts.identity.infrastructure.idp.ory
+    shell_api.core.** -> shell_api.contexts.identity.infrastructure.idp.ory.**
+    shell_api.contexts.identity.infrastructure.idp.ory -> shell_api.contexts.identity.infrastructure.idp.ory
+    shell_api.contexts.identity.infrastructure.idp.ory -> shell_api.contexts.identity.infrastructure.idp.ory.**
+    shell_api.contexts.identity.infrastructure.idp.ory.** -> shell_api.contexts.identity.infrastructure.idp.ory
+    shell_api.contexts.identity.infrastructure.idp.ory.** -> shell_api.contexts.identity.infrastructure.idp.ory.**
+    shell_api.core -> shell_api.contexts.identity.presentation.ory
+    shell_api.core -> shell_api.contexts.identity.presentation.ory.**
+    shell_api.core.** -> shell_api.contexts.identity.presentation.ory
+    shell_api.core.** -> shell_api.contexts.identity.presentation.ory.**
+    shell_api.contexts.identity.presentation.ory -> shell_api.contexts.identity.presentation.ory
+    shell_api.contexts.identity.presentation.ory -> shell_api.contexts.identity.presentation.ory.**
+    shell_api.contexts.identity.presentation.ory.** -> shell_api.contexts.identity.presentation.ory
+    shell_api.contexts.identity.presentation.ory.** -> shell_api.contexts.identity.presentation.ory.**
+unmatched_ignore_imports_alerting = none
+
+[importlinter:contract:7]
+name = Contexts
+type = direct_contexts
+modules =
+    shell_api.contexts.*
+ignore_imports =
+    shell_api.contexts.** -> shell_api.contexts.*.application.api
+    shell_api.contexts.** -> shell_api.contexts.*.application.api.**
+unmatched_ignore_imports_alerting = none
+
+[importlinter:contract:8]
+name = Shared
+type = forbidden
+source_modules =
+    shell_api.shared
+forbidden_modules =
+    shell_api.contexts
+    shell_api.core
+allow_indirect_imports = True
+
+[importlinter:contract:9]
+name = Composition root
+type = forbidden
+source_modules =
+    shell_api
+forbidden_modules =
+    shell_api.core
+allow_indirect_imports = True
+ignore_imports =
+    shell_api.main -> shell_api.core
+    shell_api.main.** -> shell_api.core
+    shell_api.worker -> shell_api.core
+    shell_api.worker.** -> shell_api.core
+    shell_api.main -> shell_api.core.**
+    shell_api.worker -> shell_api.core.**
+    shell_api.core -> shell_api.core
+    shell_api.core -> shell_api.core.**
+    shell_api.core.** -> shell_api.core
+    shell_api.core.** -> shell_api.core.**
+unmatched_ignore_imports_alerting = none

@@ -36,6 +36,7 @@ forbidden_modules =
     arq
     httpx
     httpx2
+    httpcore2
     authlib
     jwt
     jinja2
@@ -116,6 +117,7 @@ forbidden_modules =
     jwt
     httpx
     httpx2
+    httpcore2
     jinja2
     babel
 allow_indirect_imports = True

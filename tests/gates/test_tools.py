@@ -116,6 +116,7 @@ PURE = (
     "arq",
     "httpx",
     "httpx2",
+    "httpcore2",
     "authlib",
     "jwt",
     "jinja2",
@@ -164,7 +165,8 @@ BREACHES = (
         for target in ("authlib", "jwt", "httpx", "jinja2", "babel")
     ]
     + [
-        ("Libraries", source, "httpx2")
+        ("Libraries", source, target)
+        for target in ("httpx2", "httpcore2")
         for source in (
             "main",
             "worker",

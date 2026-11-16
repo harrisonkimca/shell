@@ -659,8 +659,8 @@ the same configuration that CI runs.
    imports another only through `<other>.application.api`.
 8. **Shared** (forbidden): `shell_api.shared` imports no
    `shell_api.contexts` or `shell_api.core`.
-9. **Composition root** (forbidden): only `shell_api.main` and
-   `shell_api.worker` import `shell_api.core`.
+9. **Composition root** (forbidden): outside `shell_api.core`, only
+   `shell_api.main` and `shell_api.worker` import it.
 
 ## 15. To verify before launch
 

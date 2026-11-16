@@ -1,7 +1,9 @@
 """Requirement trace and completion gates (roadmap Stage 0, approved slice 3)."""
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -39,11 +41,31 @@ def report(tmp_path: Path) -> Path:
 
 def test_normative_catalogue_and_deadlines() -> None:
     catalogue, parts = gate.load_requirements(ROOT)
-    assert len(catalogue) == 173
+    assert (
+        catalogue
+    )  # load_requirements also checks spec IDs equal roadmap assignments.
     assert catalogue["AUTH-ERROR-001"] == (0, {"unit test"})
     assert catalogue["AUTH-IDP-012"][0] == 1
     assert "AUTH-ERROR-002" not in catalogue
-    assert ("NFR-013", "configuration check", "keys", 2, False) in parts
+    # Fixed supplemental assignments approved in issue #1; not a subject inventory.
+    assert {part for part in parts if part[2]} == {
+        ("AUTH-ERROR-001", "unit test", "problem-details", 0, False),
+        ("NFR-011", "configuration check", "dependency-locks", 0, False),
+        ("NFR-011", "configuration check", "image-pins", 0, False),
+        ("NFR-011", "configuration check", "build-scans", 0, False),
+        ("NFR-013", "configuration check", "database", 0, False),
+        ("NFR-013", "configuration check", "schema", 0, False),
+        ("NFR-013", "configuration check", "internal-probes", 0, False),
+        ("NFR-013", "configuration check", "keys", 2, False),
+        ("NFR-013", "configuration check", "deployment-isolation", 7, True),
+        ("NFR-024", "configuration check", "trusted-sources", 0, False),
+        ("NFR-024", "configuration check", "image-sbom", 0, False),
+        ("NFR-024", "configuration check", "javascript-inventory", 2, False),
+        ("NFR-024", "configuration check", "final-inventory-review", 8, False),
+    }
+    assert {part for part in parts if part[1] == "configuration check" and part[4]} == {
+        ("NFR-013", "configuration check", "deployment-isolation", 7, True)
+    }
     assert ("NFR-013", "configuration check", "deployment-isolation", 7, True) in parts
     assert gate.due_parts(parts, 0) == {
         ("AUTH-ERROR-001", "unit test", "problem-details"),
@@ -291,9 +313,6 @@ def test_canonical_collection_rejects_errors_and_ignores_filters(history: Path) 
 
 @pytest.mark.parametrize("mode", ["pass", "skip", "xfail", "xpass", "deselect", "omit"])
 def test_real_pytest_reports(history: Path, mode: str) -> None:
-    import os
-    import sys
-
     directory = history / "tests"
     directory.mkdir()
     (directory / "conftest.py").write_text((ROOT / "tests/conftest.py").read_text())
@@ -328,7 +347,18 @@ def test_real_pytest_reports(history: Path, mode: str) -> None:
             "tests/test_cases.py::test_values[1]",
             "tests/test_cases.py::test_other",
         ]
-    subprocess.run(args, cwd=history, capture_output=True, check=True)
+    result = subprocess.run(args, cwd=history, capture_output=True, check=False)
+    assert result.returncode == (4 if mode == "deselect" else 0)
+    if mode in {"xfail", "xpass"}:
+        cases = ET.parse(path).findall(".//testcase")
+        marked = [
+            case for case in cases if case.get("name", "").startswith("test_values")
+        ]
+        assert marked
+        assert all(
+            len(case.findall("properties/property[@name='xfail']")) == 1
+            for case in marked
+        )
     context = {
         "tested_revision": git(history, "rev-parse", "HEAD"),
         "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
@@ -419,3 +449,70 @@ def test_pr_event_merge_field_does_not_identify_tested_merge(
             gate.verify_revision(
                 history, "pull_request", "refs/pull/7/merge", sha, "", broken, ""
             )
+
+
+def test_ordinary_runs_keep_real_delivered_evidence() -> None:
+    collected = gate.collect_tests(ROOT)
+    associations = {a for values in collected.values() for a in values}
+    assert {
+        ASSOCIATION,
+        ("AUTH-ERROR-001", "unit test", "problem-details"),
+    } <= associations
+
+
+@pytest.mark.parametrize(
+    "mode", ["filter", "deselect", "ignore", "ignore-glob", "fixture"]
+)
+def test_nested_conftest_cannot_hide_tests(history: Path, mode: str) -> None:
+    tests = history / "tests"
+    nested = tests / "unit/shared"
+    nested.mkdir(parents=True)
+    (tests / "conftest.py").write_text((ROOT / "tests/conftest.py").read_text())
+    (history / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+    )
+    (nested / "test_cases.py").write_text(
+        "import pytest\n@pytest.mark.parametrize('value', ['unexpected', 'normal'])\n"
+        "def test_values(value): pass\n"
+    )
+    (tests / "test_tools.py").write_text("def test_tools(): pass\n")
+    hooks = {
+        "filter": "def pytest_collection_modifyitems(items):\n"
+        "    items[:] = [i for i in items if 'unexpected' not in i.nodeid]\n",
+        "deselect": "def pytest_collection_modifyitems(config, items):\n"
+        "    removed = [i for i in items if 'test_tools' in i.nodeid]\n"
+        "    items[:] = [i for i in items if i not in removed]\n"
+        "    config.hook.pytest_deselected(items=removed)\n",
+        "ignore": "collect_ignore = ['test_cases.py']\n",
+        "ignore-glob": "collect_ignore_glob = ['test_*.py']\n",
+        "fixture": "import pytest\n@pytest.fixture\ndef normal_fixture(): return 42\n",
+    }
+    (nested / "conftest.py").write_text(hooks[mode])
+    if mode == "fixture":
+        (nested / "test_fixture.py").write_text(
+            "def test_fixture(normal_fixture): assert normal_fixture == 42\n"
+        )
+        assert len(gate.collect_tests(history)) == 4
+    else:
+        with pytest.raises(ValueError, match="collection"):
+            gate.collect_tests(history)
+    # The same guard must protect producer execution, not just --collect-only.
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q"],
+        cwd=history,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (result.returncode == 0) == (mode == "fixture")
+
+
+def test_unknown_stage_tag_only_rejected_when_reachable(history: Path) -> None:
+    git(history, "checkout", "--orphan", "future")
+    git(history, "commit", "--allow-empty", "-m", "future")
+    git(history, "tag", "-a", "stage-9", "-m", "future stage")
+    git(history, "checkout", "main")
+    assert gate.tag_floor(history, set(range(9))) == -1
+    git(history, "tag", "stage-99")
+    with pytest.raises(ValueError, match="Unknown completion stage"):
+        gate.tag_floor(history, set(range(9)))

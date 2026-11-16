@@ -31,7 +31,19 @@ def associations(item: pytest.Item) -> list[tuple[str, str, str]]:
     return values
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> Generator[None]:
+    for plugin in config.pluginmanager.get_plugins():
+        if Path(getattr(plugin, "__file__", "")).name == "conftest.py" and any(
+            hasattr(plugin, name) for name in ("collect_ignore", "collect_ignore_glob")
+        ):
+            raise pytest.UsageError("Conftest collection ignore lists are forbidden")
+    original = set(items)
+    yield
+    if set(items) != original or len(items) != len(original):
+        raise pytest.UsageError("Collection filtering is forbidden")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     for item in items:
         item.user_properties.extend(
@@ -61,5 +73,4 @@ def pytest_runtest_makereport(
     report = yield
     if hasattr(report, "wasxfail"):
         item.user_properties.append(("xfail", "true"))
-        report.user_properties.append(("xfail", "true"))
     return report

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, cast
 from xml.etree import ElementTree as ET
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 KINDS = {
     "unit test",
@@ -280,8 +282,7 @@ def tag_floor(root: Path, stages: set[int]) -> int:
         raise ValueError("Complete history is required")
     floor = -1
     for tag in git(root, "tag", "--list").splitlines():
-        stage = parse_tag(tag, stages)
-        if stage is None:
+        if not re.fullmatch(TAG, tag):
             continue
         commit = git(root, "rev-parse", f"refs/tags/{tag}^{{commit}}")
         result = subprocess.run(
@@ -292,6 +293,8 @@ def tag_floor(root: Path, stages: set[int]) -> int:
         if result.returncode not in {0, 1}:
             raise ValueError("Incomplete tag ancestry history")
         if result.returncode == 0:
+            stage = parse_tag(tag, stages)
+            assert stage is not None
             floor = max(floor, stage)
     return floor
 
@@ -369,8 +372,6 @@ def main() -> None:
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "local"),
     }
     # Each producer has one report. No glob can silently omit an absent producer.
-    import yaml
-
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     producers = set(workflow["jobs"]) - {"ci", "requirements"}
     passed = read_reports(

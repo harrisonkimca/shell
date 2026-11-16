@@ -216,7 +216,10 @@ replace that verification.
 **Deployment decisions.** Each README row plugs in through the setting
 below, checked when `SHELL_ENV` is not `development`. Ory Network is
 configuration; a non-Ory provider needs new adapters, a claim map and
-a sign-in module. Other swaps are configuration or adapters.
+a sign-in module. Other swaps are configuration or adapters. `SHELL_ENV` 
+must be explicitly set to `development` or `production` in the process 
+environment before loading settings. A missing or invalid value refuses 
+startup. Only development reads `.env`.
 
 | Decision | Setting | Startup refuses |
 |---|---|---|
@@ -456,14 +459,16 @@ are RFC 9457 Problem Details: `type` (`urn:shell:error:<code>`), `title`,
 `auth.recent_sign_in_required` and an RFC 9470 challenge, `Bearer
 error="insufficient_user_authentication"` with `max_age`, handled by signing in again.
 
-Framework errors use the same model: `request.not_found`,
-`request.method_not_allowed` and `request.validation_failed`;
-unexpected errors use `internal.unexpected`. Required HTTP headers,
-such as `Allow`, are preserved.
+Framework errors use the same model: `request.bad_request`,
+`request.not_found`, `request.method_not_allowed` and
+`request.validation_failed` for 400, 404, 405 and 422 respectively.
+Conflicts use 409 `request.conflict`; unexpected errors use
+`internal.unexpected`. Required HTTP headers, such as `Allow`, are preserved.
 
 - **Codes:** `<area>.<condition>` in snake case (`auth.token_expired`),
   listed in OpenAPI, never reused, translated by clients. Statuses: 401
-  token or stale sign-in; 403 scope, role or terms; 409 conflict; 422, 429 and 503 with `Retry-After`. Shell's authentication
+  token or stale sign-in; 403 scope, role or terms; 409 conflict; 422 validation 
+  or confirmation errors; 429 and 503 with `Retry-After`. Shell's authentication
   errors never reveal whether an account exists (Kratos's code sign-in
   can; section 11).
 - **Correlation IDs:** the edge overwrites any client-supplied
@@ -640,8 +645,8 @@ the same configuration that CI runs.
    `domain`.
 2. **Pure core** (forbidden): `*.domain` and `*.application` import none of
    `fastapi`, `starlette`, `pydantic`, `pydantic_settings`, `sqlalchemy`,
-   `asyncpg`, `alembic`, `redis`, `arq`, `httpx`, `authlib`, `jwt`,
-   `jinja2`, `babel`.
+   `asyncpg`, `alembic`, `redis`, `arq`, `httpx`, `httpx2`, `httpcore2`, 
+   `authlib`, `jwt`, `jinja2`, `babel`.
 3. **Web** (forbidden): only `*.presentation` and `shell_api.core` import
    `fastapi` or `starlette`; only those and `*.infrastructure` import
    `pydantic`.
@@ -652,6 +657,8 @@ the same configuration that CI runs.
    `shell_api.contexts.identity.infrastructure.idp` imports `authlib` or
    `jwt`; only `*.infrastructure` imports `httpx`; only
    `shell_api.shared.infrastructure.email` imports `jinja2` or `babel`.
+   No application module imports `httpx2` or `httpcore2`, 
+   which are test-only.
 6. **Vendor code** (forbidden): apart from their submodules, only
    `shell_api.core` imports `shell_api.contexts.identity.infrastructure.idp.ory`
    or `shell_api.contexts.identity.presentation.ory`.

@@ -21,7 +21,7 @@ def test_actual_workflow() -> None:
     validate(workflow())
 
 
-@pytest.mark.parametrize("job", ["quality", "requirements"])
+@pytest.mark.parametrize("job", ["quality", "requirements", "stack"])
 @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", None])
 def test_unsuccessful_or_missing_result(job: str, result: str | None) -> None:
     results: dict[str, Any] = {
@@ -39,7 +39,9 @@ def test_successful_results() -> None:
     )
 
 
-@pytest.mark.parametrize("scope", ["workflow", "quality", "requirements", "ci"])
+@pytest.mark.parametrize(
+    "scope", ["workflow", "quality", "stack", "requirements", "ci"]
+)
 @pytest.mark.parametrize("shell", ["true {0}", "bash"])
 @pytest.mark.parametrize(
     "results",
@@ -55,12 +57,14 @@ def test_default_run_shell_rejected(
         validate(data, results)
 
 
-@pytest.mark.parametrize("job", ["quality", "requirements", "ci"])
+@pytest.mark.parametrize("job", ["quality", "stack", "requirements", "ci"])
 @pytest.mark.parametrize("shell", ["true {0}", "bash"])
 def test_required_step_shell_validation(job: str, shell: str) -> None:
     data = workflow()
     command = next(
-        s for s in data["jobs"][job]["steps"] if "scripts/check" in s.get("run", "")
+        s
+        for s in data["jobs"][job]["steps"]
+        if any(name in s.get("run", "") for name in ("scripts/check", "scripts/images"))
     )
     command["shell"] = shell
     if shell == "bash":

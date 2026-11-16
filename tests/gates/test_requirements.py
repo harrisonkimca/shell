@@ -457,6 +457,10 @@ def test_ordinary_runs_keep_real_delivered_evidence() -> None:
     assert {
         ASSOCIATION,
         ("AUTH-ERROR-001", "unit test", "problem-details"),
+        ("NFR-011", "configuration check", "image-pins"),
+        ("NFR-011", "configuration check", "build-scans"),
+        ("NFR-024", "configuration check", "trusted-sources"),
+        ("NFR-024", "configuration check", "image-sbom"),
     } <= associations
 
 

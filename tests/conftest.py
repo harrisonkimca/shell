@@ -1,8 +1,10 @@
 """Minimal collection and requirement metadata alongside standard JUnit reports."""
 
+import inspect
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Generator
 from pathlib import Path
 
@@ -12,32 +14,36 @@ import pytest
 def pytest_plugin_registered(
     plugin: object, manager: pytest.PytestPluginManager
 ) -> None:
-    path = Path(getattr(plugin, "__file__", ""))
-    if path.name != "conftest.py":
+    source = plugin if inspect.ismodule(plugin) else type(plugin)
+    try:
+        path = Path(inspect.getfile(source)).resolve()
+    except TypeError:
+        return
+    root = Path(__file__).resolve()
+    if not path.is_relative_to(root.parents[1]) or path.is_relative_to(
+        Path(sys.prefix).resolve()
+    ):
         return
     if any(hasattr(plugin, name) for name in ("collect_ignore", "collect_ignore_glob")):
         raise pytest.UsageError("Conftest collection ignore lists are forbidden")
-    if path.resolve() == Path(__file__).resolve():
+    if path == root:
         return
-    # Registration precedes collection, including first-result hooks that can
-    # bypass modifyitems entirely. Inspect registered names to include specname
-    # aliases, independently of hook ordering and either wrapper protocol.
-    for hook in manager.get_hookcallers(plugin) or []:
-        if hook.name in {
-            "pytest_ignore_collect",
-            "pytest_collect_file",
-            "pytest_collect_directory",
-            "pytest_pycollect_makemodule",
-            "pytest_pycollect_makeitem",
-            "pytest_make_collect_report",
-            "pytest_collectreport",
-            "pytest_collection",
-            "pytest_collection_modifyitems",
-            "pytest_collection_finish",
-        }:
-            raise pytest.UsageError(
-                f"Nested conftest collection hooks are forbidden: {path}: {hook.name}"
-            )
+    # Historic registration covers earlier conftests as well as late helper
+    # modules and instances. Only the root conftest may implement hooks;
+    # registered hook names include specname aliases and both wrapper protocols.
+    if manager.get_hookcallers(plugin) or hasattr(plugin, "pytest_plugins"):
+        raise pytest.UsageError(
+            f"Repository pytest hooks and plugin declarations are forbidden "
+            f"outside the root conftest: {path}"
+        )
+
+
+def pytest_pycollect_makeitem(name: str) -> None:
+    if name == "pytest_plugins":
+        raise pytest.UsageError(
+            "Test module plugin declarations are forbidden; "
+            "use the root conftest or central pytest configuration"
+        )
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -66,11 +72,6 @@ def associations(item: pytest.Item) -> list[tuple[str, str, str]]:
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> Generator[None]:
-    for plugin in config.pluginmanager.get_plugins():
-        if Path(getattr(plugin, "__file__", "")).name == "conftest.py" and any(
-            hasattr(plugin, name) for name in ("collect_ignore", "collect_ignore_glob")
-        ):
-            raise pytest.UsageError("Conftest collection ignore lists are forbidden")
     original = set(items)
     yield
     if set(items) != original or len(items) != len(original):

@@ -480,6 +480,12 @@ def test_ordinary_runs_keep_real_delivered_evidence() -> None:
         "make-report",
         "collect-report",
         "hook-alias",
+        "configure-ignore",
+        "configure-register",
+        "module-plugin",
+        "central-instance",
+        "module-fixture-plugin",
+        "root-ignore",
         "fixture",
     ],
 )
@@ -561,7 +567,54 @@ def test_nested_conftest_cannot_hide_tests(history: Path, mode: str) -> None:
         "    items[:] = []\n",
         "fixture": "import pytest\n@pytest.fixture\ndef normal_fixture(): return 42\n",
     }
+    filtering_plugin = (
+        "import pytest\n"
+        "class Filter:\n"
+        "    @pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+        "    def pytest_collection_modifyitems(self, items):\n"
+        "        yield\n"
+        "        items[:] = [i for i in items if 'test_tools' not in i.nodeid]\n"
+    )
+    hooks.update(
+        {
+            "configure-ignore": "def pytest_configure(config):\n"
+            "    config.option.ignore = ['tests/test_tools.py']\n",
+            "configure-register": filtering_plugin + "def pytest_configure(config):\n"
+            "    config.pluginmanager.register(Filter())\n",
+            "central-instance": "",
+            "module-fixture-plugin": "",
+            "module-plugin": "",
+            "root-ignore": "",
+        }
+    )
     (nested / "conftest.py").write_text(hooks[mode])
+    if mode in {"module-plugin", "central-instance", "module-fixture-plugin"}:
+        (history / "probe_plugin.py").write_text(
+            filtering_plugin + "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+            "def pytest_collection_modifyitems(items):\n"
+            "    yield\n"
+            "    items[:] = [i for i in items if 'test_tools' not in i.nodeid]\n"
+        )
+        (history / "pyproject.toml").write_text(
+            '[tool.pytest.ini_options]\ntestpaths = ["tests"]\npythonpath = ["."]\n'
+        )
+    if mode == "central-instance":
+        with (tests / "conftest.py").open("a") as stream:
+            stream.write(
+                "\ndef pytest_configure(config):\n"
+                "    from probe_plugin import Filter\n"
+                "    config.pluginmanager.register(Filter())\n"
+            )
+    if mode == "module-fixture-plugin":
+        (history / "probe_plugin.py").write_text(
+            "import pytest\n@pytest.fixture\ndef helper_fixture(): return 42\n"
+        )
+    if mode in {"module-plugin", "module-fixture-plugin"}:
+        (tests / "test_tools.py").write_text(
+            "pytest_plugins = ['probe_plugin']\ndef test_tools(): pass\n"
+        )
+    if mode == "root-ignore":
+        (history / "conftest.py").write_text("collect_ignore = ['tests']\n")
     # Load this conftest initially too, so pytest_collection can short-circuit.
     if mode == "collection":
         (nested / "conftest.py").rename(tests / "unit/conftest.py")

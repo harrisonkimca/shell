@@ -75,6 +75,7 @@ def build_inputs(root: Path, arguments: dict[str, str]) -> list[str]:
             tokens = line.split()
             if not tokens or tokens[0].startswith("#"):
                 continue
+            tokens[0] = tokens[0].upper()
             if tokens[0] == "ARG" and tokens[1] not in {*keys, "TARGETARCH"}:
                 raise ValueError("Unknown or overridden build argument")
             if tokens[0] == "FROM":
@@ -84,7 +85,7 @@ def build_inputs(root: Path, arguments: dict[str, str]) -> list[str]:
                     raise ValueError("Missing effective build argument") from error
                 if reference not in stages:
                     inputs.append(reference)
-                if len(tokens) == 4 and tokens[2] == "AS":
+                if len(tokens) == 4 and tokens[2].upper() == "AS":
                     stages.add(tokens[3])
             if tokens[0] == "COPY":
                 for token in tokens[1:]:

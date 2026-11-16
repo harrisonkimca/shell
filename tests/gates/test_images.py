@@ -50,6 +50,8 @@ def configured(tmp_path: Path) -> Path:
         "extra-index",
         "build-arg",
         "copy-image",
+        "lowercase-from",
+        "lowercase-copy",
     ],
 )
 def test_unapproved_or_unpinned_inputs_rejected(
@@ -100,14 +102,13 @@ def test_unapproved_or_unpinned_inputs_rejected(
         )
     else:
         path = configured / "docker/api/Dockerfile"
-        path.write_text(
-            path.read_text()
-            + (
-                "\nFROM ${UNPINNED_IMAGE}\n"
-                if mutation == "build-arg"
-                else "\nCOPY --from=evil/image:latest /x /x\n"
-            )
-        )
+        instructions = {
+            "build-arg": "FROM ${UNPINNED_IMAGE}",
+            "copy-image": "COPY --from=evil/image:latest /x /x",
+            "lowercase-from": "from evil/image:latest",
+            "lowercase-copy": "copy --from=evil/image:latest /x /x",
+        }
+        path.write_text(path.read_text() + "\n" + instructions[mutation] + "\n")
     with pytest.raises((ValueError, RuntimeError)):
         images.check_configuration(configured)
 

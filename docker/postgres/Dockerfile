@@ -7,9 +7,7 @@ COPY docker/postgres/go.mod docker/postgres/go.sum ./
 RUN sha256sum go.mod go.sum > /tmp/locks.sha256 \
  && go mod download && go mod verify \
  && GOPROXY=off GOOS=linux GOARCH=${TARGETARCH} go build -mod=readonly -trimpath -ldflags='-s -w' -o /out/gosu github.com/tianon/gosu \
- && sha256sum -c /tmp/locks.sha256 \
- && go version -m /out/gosu > /out/gosu.txt
+ && sha256sum -c /tmp/locks.sha256
 FROM ${POSTGRES_IMAGE}
 COPY --from=build /out/gosu /usr/local/bin/gosu
-COPY --from=build /out/gosu.txt /usr/share/shell-build/gosu.txt
 RUN gosu nobody true

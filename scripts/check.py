@@ -6,10 +6,11 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import cast
 
 from grimp import ImportGraph
 from importlinter.contracts.independence import IndependenceContract
-from importlinter.contracts.layers import LayersContract
+from importlinter.contracts.layers import Layer, LayersContract
 from importlinter.domain.contract import ContractCheck
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,7 +22,15 @@ def check_locks(root: Path) -> None:
         raise ValueError("Missing uv.lock")
     data = tomllib.loads(lock.read_text())
     for package in data["package"]:
-        if "registry" in package["source"]:
+        source = package["source"]
+        if package["name"] == "shell" and source in (
+            {"virtual": "."},
+            {"editable": "."},
+        ):
+            continue
+        if set(source) != {"registry"}:
+            raise ValueError("Dependency source must be a hashed registry distribution")
+        if "registry" in source:
             artifacts = [
                 *package.get("wheels", []),
                 *([package["sdist"]] if "sdist" in package else []),
@@ -70,12 +79,18 @@ def package_layer(module: str) -> tuple[str, str]:
 
 
 class DirectLayers(LayersContract):
+    # import-linter 2.11 discovers fields in cls.__dict__, not inherited fields.
     @classmethod
     def _get_field_names(cls) -> list[str]:
         return LayersContract._get_field_names()
 
     def check(self, graph: ImportGraph, verbose: bool) -> ContractCheck:
-        ranks = {"domain": 0, "application": 1, "infrastructure": 2, "presentation": 2}
+        layers = cast(list[Layer], self.layers)
+        ranks = {
+            tail.name: (rank, layer.is_independent)
+            for rank, layer in enumerate(layers)
+            for tail in layer.module_tails
+        }
         for source in graph.modules:
             a, layer_a = package_layer(source)
             for target in graph.find_modules_directly_imported_by(source):
@@ -85,9 +100,11 @@ class DirectLayers(LayersContract):
                     and layer_a in ranks
                     and layer_b in ranks
                     and (
-                        ranks[layer_a] < ranks[layer_b]
+                        ranks[layer_a][0] > ranks[layer_b][0]
                         or (
-                            ranks[layer_a] == ranks[layer_b] == 2 and layer_a != layer_b
+                            ranks[layer_a] == ranks[layer_b]
+                            and ranks[layer_a][1]
+                            and layer_a != layer_b
                         )
                     )
                 )
@@ -97,6 +114,7 @@ class DirectLayers(LayersContract):
 
 
 class DirectContexts(IndependenceContract):
+    # As above, inherit the upstream contract's field inventory explicitly.
     @classmethod
     def _get_field_names(cls) -> list[str]:
         return IndependenceContract._get_field_names()

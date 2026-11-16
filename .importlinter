@@ -143,13 +143,21 @@ forbidden_modules =
 allow_indirect_imports = True
 ignore_imports =
     shell_api.core -> shell_api.contexts.identity.infrastructure.idp.ory
+    shell_api.core -> shell_api.contexts.identity.infrastructure.idp.ory.**
     shell_api.core.** -> shell_api.contexts.identity.infrastructure.idp.ory
+    shell_api.core.** -> shell_api.contexts.identity.infrastructure.idp.ory.**
     shell_api.contexts.identity.infrastructure.idp.ory -> shell_api.contexts.identity.infrastructure.idp.ory
+    shell_api.contexts.identity.infrastructure.idp.ory -> shell_api.contexts.identity.infrastructure.idp.ory.**
     shell_api.contexts.identity.infrastructure.idp.ory.** -> shell_api.contexts.identity.infrastructure.idp.ory
+    shell_api.contexts.identity.infrastructure.idp.ory.** -> shell_api.contexts.identity.infrastructure.idp.ory.**
     shell_api.core -> shell_api.contexts.identity.presentation.ory
+    shell_api.core -> shell_api.contexts.identity.presentation.ory.**
     shell_api.core.** -> shell_api.contexts.identity.presentation.ory
+    shell_api.core.** -> shell_api.contexts.identity.presentation.ory.**
     shell_api.contexts.identity.presentation.ory -> shell_api.contexts.identity.presentation.ory
+    shell_api.contexts.identity.presentation.ory -> shell_api.contexts.identity.presentation.ory.**
     shell_api.contexts.identity.presentation.ory.** -> shell_api.contexts.identity.presentation.ory
+    shell_api.contexts.identity.presentation.ory.** -> shell_api.contexts.identity.presentation.ory.**
 unmatched_ignore_imports_alerting = none
 
 [importlinter:contract:7]
@@ -185,4 +193,10 @@ ignore_imports =
     shell_api.main.** -> shell_api.core
     shell_api.worker -> shell_api.core
     shell_api.worker.** -> shell_api.core
+    shell_api.main -> shell_api.core.**
+    shell_api.worker -> shell_api.core.**
+    shell_api.core -> shell_api.core
+    shell_api.core -> shell_api.core.**
+    shell_api.core.** -> shell_api.core
+    shell_api.core.** -> shell_api.core.**
 unmatched_ignore_imports_alerting = none

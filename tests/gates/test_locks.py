@@ -31,3 +31,22 @@ def test_invalid_locks(tmp_path: Path, mutation: str) -> None:
         lock.write_text(re.sub(r'hash = "sha256:[^"]+",? ', "", lock.read_text()))
     with pytest.raises((ValueError, RuntimeError)):
         check_locks(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '{ git = "https://example.com/pkg", rev = "abc" }',
+        '{ url = "https://example.com/pkg.whl" }',
+        '{ path = "../pkg.whl" }',
+        '{ directory = "../pkg" }',
+        '{ editable = "../pkg" }',
+        '{ virtual = "../pkg" }',
+    ],
+)
+def test_non_registry_dependencies_rejected(tmp_path: Path, source: str) -> None:
+    (tmp_path / "uv.lock").write_text(
+        '[[package]]\nname = "pkg"\nversion = "1"\nsource = ' + source + "\n"
+    )
+    with pytest.raises(ValueError, match="source"):
+        check_locks(tmp_path)

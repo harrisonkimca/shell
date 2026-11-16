@@ -1,5 +1,6 @@
 """AUTH-ERROR-001: exercise the real handler through test-only routes."""
 
+from unittest.mock import Mock
 from uuid import UUID
 
 import pytest
@@ -19,7 +20,12 @@ class Payload(BaseModel):
 
 
 @pytest.fixture
-def app() -> FastAPI:
+def selected_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SHELL_ENV", "production")
+
+
+@pytest.fixture
+def app(selected_environment: None) -> FastAPI:
     app = create_app()
 
     def conflict() -> None:
@@ -34,12 +40,16 @@ def app() -> FastAPI:
     def http_error() -> None:
         raise HTTPException(404, detail=SENSITIVE, headers={"X-Test": "preserved"})
 
+    def bad_request() -> None:
+        raise HTTPException(400, detail=SENSITIVE)
+
     def validate(payload: Payload) -> Payload:
         return payload
 
     def ok() -> dict[str, str]:
         return {"correlation_id": "success"}
 
+    app.add_api_route("/bad-request", bad_request, methods=["GET"])
     app.add_api_route("/conflict", conflict, methods=["GET"])
     app.add_api_route("/provider", provider, methods=["GET"])
     app.add_api_route("/unexpected", unexpected, methods=["GET"])
@@ -52,6 +62,7 @@ def app() -> FastAPI:
 @pytest.mark.parametrize(
     ("method", "path", "status", "code", "title"),
     [
+        ("GET", "/bad-request", 400, "request.bad_request", "Bad Request"),
         ("GET", "/conflict", 409, "request.conflict", "Conflict"),
         ("GET", "/provider", 503, "provider.unavailable", "Service Unavailable"),
         ("GET", "/unexpected", 500, "internal.unexpected", "Internal Server Error"),
@@ -86,8 +97,10 @@ def test_problem_details(
     assert SENSITIVE not in response.text
     if status == 405:
         assert response.headers["allow"] == "POST"
-    if status in (422, 503):
+    if status == 503:
         assert response.headers["retry-after"] == "1"
+    else:
+        assert "retry-after" not in response.headers
     if path == "/http-error":
         assert response.headers["x-test"] == "preserved"
 
@@ -109,7 +122,7 @@ def test_correlation_is_generated_for_every_request(app: FastAPI) -> None:
     assert len(set(seen)) == len(seen)
 
 
-def test_factory_has_no_public_or_fixture_routes() -> None:
+def test_factory_has_no_public_or_fixture_routes(selected_environment: None) -> None:
     assert create_app().routes == []
 
 
@@ -118,16 +131,25 @@ def test_codes_are_listed_in_openapi(app: FastAPI) -> None:
     for status in ("default", "422"):
         content = responses[status]["content"]
         assert set(content) == {"application/problem+json"}
-        assert set(
+        documented = set(
             content["application/problem+json"]["schema"]["properties"]["code"]["enum"]
-        ) == {
-            "request.conflict",
-            "provider.unavailable",
-            "internal.unexpected",
-            "request.not_found",
-            "request.method_not_allowed",
-            "request.validation_failed",
-        }
+        )
+        emitted: set[str] = set()
+        with TestClient(app, raise_server_exceptions=False) as client:
+            for path in (
+                "/conflict",
+                "/provider",
+                "/unexpected",
+                "/missing",
+                "/validate",
+                "/http-error",
+                "/bad-request",
+            ):
+                emitted.add(client.get(path).json()["code"])
+            emitted.add(
+                client.post("/validate", json={"count": SENSITIVE}).json()["code"]
+            )
+        assert documented == emitted
 
 
 def test_unmapped_http_errors_are_bare_internal_errors(app: FastAPI) -> None:
@@ -152,3 +174,18 @@ def test_invalid_json_and_input_are_not_returned(app: FastAPI, body: str) -> Non
     assert response.status_code == 422
     assert response.json()["code"] == "request.validation_failed"
     assert "synthetic-secret" not in response.text
+
+
+def test_builtin_telemetry_is_disabled(
+    selected_environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FASTAPI_OTEL_AUTO_CONFIGURE", "true")
+    factory = Mock(wraps=FastAPI)
+    monkeypatch.setattr("shell_api.core.app.FastAPI", factory)
+    create_app()
+    assert factory.call_args.kwargs["telemetry"] == {
+        "tracing": False,
+        "metrics": False,
+        "logs": False,
+        "auto_configure": False,
+    }

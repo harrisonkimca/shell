@@ -115,6 +115,7 @@ PURE = (
     "redis",
     "arq",
     "httpx",
+    "httpx2",
     "authlib",
     "jwt",
     "jinja2",
@@ -161,6 +162,21 @@ BREACHES = (
     + [
         ("Libraries", "core", target)
         for target in ("authlib", "jwt", "httpx", "jinja2", "babel")
+    ]
+    + [
+        ("Libraries", source, "httpx2")
+        for source in (
+            "main",
+            "worker",
+            "core",
+            *(
+                f"{package}.{layer}"
+                for package in PACKAGES
+                for layer in ("domain", "application", "infrastructure", "presentation")
+            ),
+            "contexts.identity.infrastructure.idp",
+            "shared.infrastructure.email",
+        )
     ]
     + [
         (

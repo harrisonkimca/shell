@@ -7,5 +7,11 @@
 !apps/api/
 !apps/api/src/
 !apps/api/src/**
+!docker/
+!docker/**/
+!docker/**/Dockerfile
+!docker/**/go.mod
+!docker/**/go.sum
+!docker/python/debian.sources
 **/__pycache__
 **/*.pyc

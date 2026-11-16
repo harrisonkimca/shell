@@ -461,7 +461,27 @@ def test_ordinary_runs_keep_real_delivered_evidence() -> None:
 
 
 @pytest.mark.parametrize(
-    "mode", ["filter", "deselect", "ignore", "ignore-glob", "fixture"]
+    "mode",
+    [
+        "filter",
+        "deselect",
+        "ignore",
+        "ignore-glob",
+        "ignore-hook",
+        "makeitem",
+        "modify-wrapper",
+        "modify-hookwrapper",
+        "modify-trylast",
+        "finish",
+        "collect-file",
+        "collect-directory",
+        "makemodule",
+        "collection",
+        "make-report",
+        "collect-report",
+        "hook-alias",
+        "fixture",
+    ],
 )
 def test_nested_conftest_cannot_hide_tests(history: Path, mode: str) -> None:
     tests = history / "tests"
@@ -476,6 +496,10 @@ def test_nested_conftest_cannot_hide_tests(history: Path, mode: str) -> None:
         "def test_values(value): pass\n"
     )
     (tests / "test_tools.py").write_text("def test_tools(): pass\n")
+    if mode == "collect-directory":
+        child = nested / "child"
+        child.mkdir()
+        (child / "test_child.py").write_text("def test_child(): pass\n")
     hooks = {
         "filter": "def pytest_collection_modifyitems(items):\n"
         "    items[:] = [i for i in items if 'unexpected' not in i.nodeid]\n",
@@ -485,26 +509,102 @@ def test_nested_conftest_cannot_hide_tests(history: Path, mode: str) -> None:
         "    config.hook.pytest_deselected(items=removed)\n",
         "ignore": "collect_ignore = ['test_cases.py']\n",
         "ignore-glob": "collect_ignore_glob = ['test_*.py']\n",
+        "ignore-hook": "def pytest_ignore_collect(collection_path):\n"
+        "    if collection_path.name == 'test_cases.py': return True\n",
+        "makeitem": "def pytest_pycollect_makeitem(name):\n"
+        "    if name == 'test_values': return []\n",
+        "modify-wrapper": "import pytest\n"
+        "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+        "def pytest_collection_modifyitems(items):\n"
+        "    yield\n"
+        "    items[:] = [i for i in items if 'unexpected' not in i.nodeid]\n",
+        "modify-hookwrapper": "import pytest\n"
+        "@pytest.hookimpl(hookwrapper=True, tryfirst=True)\n"
+        "def pytest_collection_modifyitems(items):\n"
+        "    yield\n"
+        "    items[:] = [i for i in items if 'unexpected' not in i.nodeid]\n",
+        "modify-trylast": "import pytest\n"
+        "@pytest.hookimpl(trylast=True)\n"
+        "def pytest_collection_modifyitems(items): pass\n",
+        "finish": "def pytest_collection_finish(session):\n"
+        "    session.items[:] = [i for i in session.items "
+        "if 'unexpected' not in i.nodeid]\n",
+        "collect-file": "import pytest\n"
+        "@pytest.hookimpl(wrapper=True)\n"
+        "def pytest_collect_file(file_path):\n"
+        "    result = yield\n"
+        "    return [] if file_path.name == 'test_cases.py' else result\n",
+        "collect-directory": "import pytest\n"
+        "@pytest.hookimpl(wrapper=True)\n"
+        "def pytest_collect_directory(path):\n"
+        "    yield\n"
+        "    return None\n",
+        "makemodule": "import pytest\n"
+        "@pytest.hookimpl(wrapper=True)\n"
+        "def pytest_pycollect_makemodule(module_path):\n"
+        "    yield\n"
+        "    return None\n",
+        "collection": "import pytest\n"
+        "@pytest.hookimpl(tryfirst=True)\n"
+        "def pytest_collection(session): return True\n",
+        "make-report": "import pytest\n"
+        "@pytest.hookimpl(wrapper=True)\n"
+        "def pytest_make_collect_report():\n"
+        "    report = yield\n"
+        "    report.result[:] = []\n"
+        "    return report\n",
+        "collect-report": "def pytest_collectreport(report):\n"
+        "    report.result[:] = []\n",
+        "hook-alias": "import pytest\n"
+        "@pytest.hookimpl(specname='pytest_collection_modifyitems')\n"
+        "def pytest_custom_filter(items):\n"
+        "    items[:] = []\n",
         "fixture": "import pytest\n@pytest.fixture\ndef normal_fixture(): return 42\n",
     }
     (nested / "conftest.py").write_text(hooks[mode])
+    # Load this conftest initially too, so pytest_collection can short-circuit.
+    if mode == "collection":
+        (nested / "conftest.py").rename(tests / "unit/conftest.py")
+        (history / "pyproject.toml").write_text(
+            '[tool.pytest.ini_options]\ntestpaths = ["tests/unit"]\n'
+        )
     if mode == "fixture":
         (nested / "test_fixture.py").write_text(
             "def test_fixture(normal_fixture): assert normal_fixture == 42\n"
         )
-        assert len(gate.collect_tests(history)) == 4
-    else:
-        with pytest.raises(ValueError, match="collection"):
-            gate.collect_tests(history)
+    collection_error = None
+    collected = {}
+    try:
+        collected = gate.collect_tests(history)
+    except ValueError as error:
+        collection_error = str(error)
     # The same guard must protect producer execution, not just --collect-only.
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q"],
+        [sys.executable, "-m", "pytest", "-q", "--junitxml=execution.xml"],
         cwd=history,
         capture_output=True,
         text=True,
         check=False,
     )
-    assert (result.returncode == 0) == (mode == "fixture")
+    if mode == "fixture":
+        assert collection_error is None
+        assert len(collected) == 4
+        assert result.returncode == 0, result.stdout + result.stderr
+        cases = ET.parse(history / "execution.xml").findall(".//testcase")
+        assert len(cases) == 4
+        assert {
+            prop.attrib["value"]
+            for case in cases
+            for prop in case.findall("properties/property")
+            if prop.attrib["name"] == "test_nodeid"
+        } == set(collected)
+        assert all(case.find("failure") is None for case in cases)
+        assert all(case.find("error") is None for case in cases)
+        assert all(case.find("skipped") is None for case in cases)
+    else:
+        assert collection_error and "collection" in collection_error.lower()
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "forbidden" in (result.stdout + result.stderr).lower()
 
 
 def test_unknown_stage_tag_only_rejected_when_reachable(history: Path) -> None:

@@ -9,6 +9,37 @@ from pathlib import Path
 import pytest
 
 
+def pytest_plugin_registered(
+    plugin: object, manager: pytest.PytestPluginManager
+) -> None:
+    path = Path(getattr(plugin, "__file__", ""))
+    if path.name != "conftest.py":
+        return
+    if any(hasattr(plugin, name) for name in ("collect_ignore", "collect_ignore_glob")):
+        raise pytest.UsageError("Conftest collection ignore lists are forbidden")
+    if path.resolve() == Path(__file__).resolve():
+        return
+    # Registration precedes collection, including first-result hooks that can
+    # bypass modifyitems entirely. Inspect registered names to include specname
+    # aliases, independently of hook ordering and either wrapper protocol.
+    for hook in manager.get_hookcallers(plugin) or []:
+        if hook.name in {
+            "pytest_ignore_collect",
+            "pytest_collect_file",
+            "pytest_collect_directory",
+            "pytest_pycollect_makemodule",
+            "pytest_pycollect_makeitem",
+            "pytest_make_collect_report",
+            "pytest_collectreport",
+            "pytest_collection",
+            "pytest_collection_modifyitems",
+            "pytest_collection_finish",
+        }:
+            raise pytest.UsageError(
+                f"Nested conftest collection hooks are forbidden: {path}: {hook.name}"
+            )
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--requirements-collection", help="Write canonical collection metadata"

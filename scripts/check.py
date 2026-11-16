@@ -56,7 +56,7 @@ def main() -> None:
         ["pyright"],
         ["lint-imports"],
         [sys.executable, "scripts/check_ci.py"],
-        ["pytest", "--junitxml=reports/quality.xml"],
+        ["pytest", "tests/gates", "tests/unit", "--junitxml=reports/quality.xml"],
     ]
     env = {**os.environ, "PYTHONPATH": str(ROOT / "apps/api/src")}
     failed = False

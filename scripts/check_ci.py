@@ -57,6 +57,9 @@ def validate(workflow: dict[str, Any], results: dict[str, Any] | None = None) ->
     if "if" in jobs["quality"]:
         raise ValueError("Quality must execute on every run")
     require_command(jobs["quality"], "uv run --locked python scripts/check.py")
+    if "stack" not in jobs or "if" in jobs["stack"]:
+        raise ValueError("Stack must execute on every run")
+    require_command(jobs["stack"], "uv run --locked python scripts/images.py")
     if "requirements" not in jobs:
         raise ValueError("Missing requirements job")
     requirements = jobs["requirements"]

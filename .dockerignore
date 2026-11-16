@@ -1,0 +1,11 @@
+# An allowlist keeps credentials, host dependencies and test tooling out.
+**
+!pyproject.toml
+!uv.lock
+!.python-version
+!apps/
+!apps/api/
+!apps/api/src/
+!apps/api/src/**
+**/__pycache__
+**/*.pyc

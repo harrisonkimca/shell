@@ -18,7 +18,7 @@ dev = [
     "grimp==3.20",
     "pyyaml==6.0.3",
     "types-pyyaml==6.0.12.20250915",
-    "httpx==0.28.1",
+    "httpx2==2.16.0",
 ]
 
 [tool.uv]

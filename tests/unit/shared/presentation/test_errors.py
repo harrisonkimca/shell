@@ -22,30 +22,30 @@ class Payload(BaseModel):
 def app() -> FastAPI:
     app = create_app()
 
-    @app.get("/conflict")
     def conflict() -> None:
         raise Conflict(SENSITIVE)
 
-    @app.get("/provider")
     def provider() -> None:
         raise ProviderUnavailable(SENSITIVE)
 
-    @app.get("/unexpected")
     def unexpected() -> None:
         raise RuntimeError(SENSITIVE)
 
-    @app.get("/http-error")
     def http_error() -> None:
         raise HTTPException(404, detail=SENSITIVE, headers={"X-Test": "preserved"})
 
-    @app.post("/validate")
     def validate(payload: Payload) -> Payload:
         return payload
 
-    @app.get("/ok")
     def ok() -> dict[str, str]:
         return {"correlation_id": "success"}
 
+    app.add_api_route("/conflict", conflict, methods=["GET"])
+    app.add_api_route("/provider", provider, methods=["GET"])
+    app.add_api_route("/unexpected", unexpected, methods=["GET"])
+    app.add_api_route("/http-error", http_error, methods=["GET"])
+    app.add_api_route("/validate", validate, methods=["POST"])
+    app.add_api_route("/ok", ok, methods=["GET"])
     return app
 
 
@@ -95,9 +95,10 @@ def test_problem_details(
 def test_correlation_is_generated_for_every_request(app: FastAPI) -> None:
     seen: list[str] = []
 
-    @app.get("/correlation")
     def correlation(request: Request) -> dict[str, str]:
         return {"correlation_id": request.state.correlation_id}
+
+    app.add_api_route("/correlation", correlation, methods=["GET"])
 
     with TestClient(app, raise_server_exceptions=False) as client:
         for path in ("/correlation", "/missing", "/unexpected", "/provider") * 2:
@@ -113,23 +114,27 @@ def test_factory_has_no_public_or_fixture_routes() -> None:
 
 
 def test_codes_are_listed_in_openapi(app: FastAPI) -> None:
-    schema = app.openapi()
-    assert set(
-        schema["components"]["schemas"]["ProblemDetails"]["properties"]["code"]["enum"]
-    ) == {
-        "request.conflict",
-        "provider.unavailable",
-        "internal.unexpected",
-        "request.not_found",
-        "request.method_not_allowed",
-        "request.validation_failed",
-    }
+    responses = app.openapi()["paths"]["/validate"]["post"]["responses"]
+    for status in ("default", "422"):
+        content = responses[status]["content"]
+        assert set(content) == {"application/problem+json"}
+        assert set(
+            content["application/problem+json"]["schema"]["properties"]["code"]["enum"]
+        ) == {
+            "request.conflict",
+            "provider.unavailable",
+            "internal.unexpected",
+            "request.not_found",
+            "request.method_not_allowed",
+            "request.validation_failed",
+        }
 
 
 def test_unmapped_http_errors_are_bare_internal_errors(app: FastAPI) -> None:
-    @app.get("/unmapped")
     def unmapped() -> None:
         raise HTTPException(502, detail=SENSITIVE)
+
+    app.add_api_route("/unmapped", unmapped, methods=["GET"])
 
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.get("/unmapped")

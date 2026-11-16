@@ -217,3 +217,19 @@ def test_fixable_findings_are_never_exempted(severity: str) -> None:
 def test_missing_image_evidence_fails() -> None:
     with pytest.raises(ValueError, match="coverage"):
         images.check_coverage({"one", "two"}, {"one": {}})
+
+
+@pytest.mark.parametrize("architecture", ["amd64", "arm64"])
+def test_identity_inspection_works_with_ci_docker_cli(
+    monkeypatch: pytest.MonkeyPatch, architecture: str
+) -> None:
+    def inspect(*args: str) -> str:
+        assert args == ("docker", "image", "inspect", "sha256:" + "a" * 64)
+        return json.dumps([{"Os": "linux", "Architecture": architecture}])
+
+    monkeypatch.setattr(images, "command", inspect)
+    if architecture == "amd64":
+        assert images.local_identity("sha256:" + "a" * 64)["Architecture"] == "amd64"
+    else:
+        with pytest.raises(ValueError, match="platform"):
+            images.local_identity("sha256:" + "a" * 64)

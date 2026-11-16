@@ -202,9 +202,9 @@ def check_coverage(expected: set[str], actual: dict[str, Any]) -> None:
 
 
 def local_identity(reference: str) -> dict[str, Any]:
-    result = json.loads(
-        command("docker", "image", "inspect", "--platform", PLATFORM, reference)
-    )[0]
+    # Callers use a selected child digest or the unique loaded application ref.
+    # Inspect then verifies the platform without requiring newer CLI flags.
+    result = json.loads(command("docker", "image", "inspect", reference))[0]
     if result["Os"] + "/" + result["Architecture"] != PLATFORM:
         raise ValueError("Wrong image platform")
     return result

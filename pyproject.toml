@@ -2,10 +2,24 @@
 name = "shell"
 version = "0.0.0"
 requires-python = "==3.13.*"
-dependencies = []
+dependencies = [
+    "fastapi==0.163.1",
+    "pydantic-settings==2.16.3",
+    "uvicorn==0.54.0",
+]
 
 [dependency-groups]
-dev = ["ruff==0.15.7", "pyright==1.1.408", "pytest==9.0.2", "pre-commit==4.5.1", "import-linter==2.11", "grimp==3.20", "pyyaml==6.0.3", "types-pyyaml==6.0.12.20250915"]
+dev = [
+    "ruff==0.15.7",
+    "pyright==1.1.408",
+    "pytest==9.0.2",
+    "pre-commit==4.5.1",
+    "import-linter==2.11",
+    "grimp==3.20",
+    "pyyaml==6.0.3",
+    "types-pyyaml==6.0.12.20250915",
+    "httpx==0.28.1",
+]
 
 [tool.uv]
 required-version = "==0.11.23"

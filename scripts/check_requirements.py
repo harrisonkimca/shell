@@ -318,8 +318,15 @@ def verify_revision(
         if payload.get("after") != actual:
             raise ValueError("Push and checkout revisions disagree")
     elif event == "pull_request":
-        if payload.get("pull_request", {}).get("merge_commit_sha") != actual:
-            raise ValueError("PR merge and checkout revisions disagree")
+        # The event's merge_commit_sha may be null/stale while GitHub creates
+        # the test merge. GITHUB_SHA identifies it; verify its actual parents.
+        pull_request = payload.get("pull_request", {})
+        parents = git(root, "show", "-s", "--format=%P", "HEAD").split()
+        expected_parents = [
+            pull_request.get(side, {}).get("sha") for side in ("base", "head")
+        ]
+        if parents != expected_parents:
+            raise ValueError("PR base/head and tested merge parents disagree")
 
 
 def main() -> None:

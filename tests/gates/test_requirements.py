@@ -369,7 +369,20 @@ def test_ref_revision_is_checked(history: Path, event: str) -> None:
     actual_event = event
     if event == "pull_request":
         ref = "refs/pull/1/merge"
-        payload = {"pull_request": {"merge_commit_sha": sha}}
+        base = sha
+        git(history, "checkout", "-b", "topic")
+        git(history, "commit", "--allow-empty", "-m", "topic")
+        head = git(history, "rev-parse", "HEAD")
+        git(history, "checkout", "main")
+        git(history, "merge", "--no-ff", "topic", "-m", "fixture merge")
+        sha = git(history, "rev-parse", "HEAD")
+        payload = {
+            "pull_request": {
+                "merge_commit_sha": sha,
+                "base": {"sha": base},
+                "head": {"sha": head},
+            }
+        }
     elif event == "tag":
         git(history, "tag", "-a", "stage-0-r2", "-m", "fixture correction")
         ref = "refs/tags/stage-0-r2"
@@ -377,3 +390,32 @@ def test_ref_revision_is_checked(history: Path, event: str) -> None:
     gate.verify_revision(history, actual_event, ref, sha, "", payload, "")
     with pytest.raises(ValueError):
         gate.verify_revision(history, actual_event, ref, "b" * 40, "", payload, "")
+
+
+@pytest.mark.parametrize("merge_field", [None, "b" * 40])
+def test_pr_event_merge_field_does_not_identify_tested_merge(
+    history: Path, merge_field: str | None
+) -> None:
+    base = git(history, "rev-parse", "HEAD")
+    git(history, "checkout", "-b", "topic")
+    git(history, "commit", "--allow-empty", "-m", "topic")
+    head = git(history, "rev-parse", "HEAD")
+    git(history, "checkout", "main")
+    git(history, "merge", "--no-ff", "topic", "-m", "fixture merge")
+    sha = git(history, "rev-parse", "HEAD")
+    payload = {
+        "pull_request": {
+            "merge_commit_sha": merge_field,
+            "base": {"sha": base},
+            "head": {"sha": head},
+        }
+    }
+    gate.verify_revision(
+        history, "pull_request", "refs/pull/7/merge", sha, "", payload, ""
+    )
+    for field in ("base", "head"):
+        broken = {"pull_request": {**payload["pull_request"], field: {"sha": "c" * 40}}}
+        with pytest.raises(ValueError):
+            gate.verify_revision(
+                history, "pull_request", "refs/pull/7/merge", sha, "", broken, ""
+            )

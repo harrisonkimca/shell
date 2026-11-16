@@ -645,8 +645,8 @@ the same configuration that CI runs.
    `domain`.
 2. **Pure core** (forbidden): `*.domain` and `*.application` import none of
    `fastapi`, `starlette`, `pydantic`, `pydantic_settings`, `sqlalchemy`,
-   `asyncpg`, `alembic`, `redis`, `arq`, `httpx`, `httpx2`, `authlib`, `jwt`,
-   `jinja2`, `babel`.
+   `asyncpg`, `alembic`, `redis`, `arq`, `httpx`, `httpx2`, `httpcore2`, 
+   `authlib`, `jwt`, `jinja2`, `babel`.
 3. **Web** (forbidden): only `*.presentation` and `shell_api.core` import
    `fastapi` or `starlette`; only those and `*.infrastructure` import
    `pydantic`.
@@ -657,7 +657,8 @@ the same configuration that CI runs.
    `shell_api.contexts.identity.infrastructure.idp` imports `authlib` or
    `jwt`; only `*.infrastructure` imports `httpx`; only
    `shell_api.shared.infrastructure.email` imports `jinja2` or `babel`.
-   No application module imports `httpx2`, which is test-only.
+   No application module imports `httpx2` or `httpcore2`, 
+   which are test-only.
 6. **Vendor code** (forbidden): apart from their submodules, only
    `shell_api.core` imports `shell_api.contexts.identity.infrastructure.idp.ory`
    or `shell_api.contexts.identity.presentation.ory`.

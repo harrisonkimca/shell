@@ -224,6 +224,14 @@ def test_services_preserve_modules_entrypoint_and_privilege_behavior(
         "--mount",
         f"type=bind,src={script},dst=/docker-entrypoint-initdb.d/probe.sql,readonly",
     ) as name:
+        # The initialization server can already answer SQL while PID 1 is still
+        # the root entrypoint. Wait for its final privilege drop before probing.
+        wait_command(
+            name,
+            "sh",
+            "-c",
+            "grep -q '^Uid:[[:space:]]*70[[:space:]]' /proc/1/status",
+        )
         query = [
             "psql",
             "-U",

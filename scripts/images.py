@@ -423,6 +423,14 @@ def go_packages(text: str) -> dict[str, str]:
 
 
 def package_version(package: dict[str, Any]) -> str:
+    if (
+        not package.get("Version")
+        and package.get("Name") == package.get("ID") == "caddy"
+        and package.get("AnalyzedBy") == "gobinary"
+        and package.get("Identifier", {}).get("PURL") == "pkg:golang/caddy"
+    ):
+        # Same generated local wrapper checked by check_sbom, not a dependency.
+        return ""
     # Trivy's native OS report splits epochs/releases; CycloneDX uses the
     # complete installed distribution version (as do dpkg/apk queries).
     epoch = f"{package['Epoch']}:" if package.get("Epoch") else ""

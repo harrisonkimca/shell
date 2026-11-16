@@ -412,3 +412,20 @@ def test_xcaddy_local_main_wrapper_still_requires_versioned_caddy_library(
     path.write_text(json.dumps(bom))
     with pytest.raises(ValueError):
         images.check_sbom(path, identity)
+
+
+def test_native_inventory_accepts_only_the_unversioned_local_caddy_wrapper() -> None:
+    wrapper = {
+        "Name": "caddy",
+        "ID": "caddy",
+        "AnalyzedBy": "gobinary",
+        "Identifier": {"PURL": "pkg:golang/caddy"},
+    }
+    assert images.package_version(wrapper) == ""
+    for change in (
+        {"Name": "github.com/caddyserver/caddy/v2"},
+        {"AnalyzedBy": "apk"},
+        {"Identifier": {"PURL": "pkg:golang/other"}},
+    ):
+        with pytest.raises((ValueError, KeyError)):
+            images.package_version(wrapper | change)

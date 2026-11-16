@@ -31,7 +31,7 @@ AUTH-PRIVACY-002–003, AUTH-PRIVACY-005–006;
 AUTH-SCOPE-003;
 AUTH-SIGN-002;
 AUTH-TRUST-001–007;
-NFR-003, NFR-009.
+NFR-003, NFR-009, NFR-011.
 
 **Columns.** *Requirement*, in MUST wording. *Acceptance*, one testable
 line. *Verification*: unit test; integration suite (against the real

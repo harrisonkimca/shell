@@ -59,3 +59,134 @@ def test_aggregate_always_runs() -> None:
     data["jobs"]["ci"].pop("if")
     with pytest.raises(ValueError):
         validate(data)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing-env",
+        "noop-ci",
+        "omitted-quality",
+        "job-continue",
+        "step-continue",
+        "conditional-quality",
+        "conditional-command",
+        "masked-command",
+        "reusable-workflow",
+        "missing-checksum",
+    ],
+)
+def test_reported_execution_bypasses(mutation: str) -> None:
+    data = workflow()
+    quality = data["jobs"]["quality"]
+    aggregate = data["jobs"]["ci"]
+    command = next(
+        s for s in quality["steps"] if "scripts/check.py" in s.get("run", "")
+    )
+    gate = aggregate["steps"][-1]
+    if mutation == "missing-env":
+        gate.pop("env")
+    elif mutation == "noop-ci":
+        gate["run"] = "true"
+    elif mutation == "omitted-quality":
+        quality["steps"].remove(command)
+    elif mutation == "job-continue":
+        quality["continue-on-error"] = True
+    elif mutation == "step-continue":
+        command["continue-on-error"] = True
+    elif mutation == "conditional-quality":
+        quality["if"] = "${{ false }}"
+    elif mutation == "conditional-command":
+        command["if"] = "${{ false }}"
+    elif mutation == "masked-command":
+        command["run"] += " || true"
+    elif mutation == "reusable-workflow":
+        data["jobs"]["extra"] = {"uses": "org/repo/.github/workflows/w.yml@main"}
+        aggregate["needs"].append("extra")
+    elif mutation == "missing-checksum":
+        quality["steps"][1]["with"].pop("checksum", None)
+    with pytest.raises(ValueError):
+        validate(data)
+
+
+def test_aggregate_cli_requires_results() -> None:
+    import os
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "scripts/check_ci.py", "--aggregate"],
+        cwd=ROOT,
+        env={k: v for k, v in os.environ.items() if k != "CI_NEEDS"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "CI_NEEDS" in result.stderr
+
+
+@pytest.mark.parametrize("extension", ["yml", "yaml"])
+def test_additional_workflow_rejected(tmp_path: Path, extension: str) -> None:
+    from scripts.check_ci import main
+
+    directory = tmp_path / ".github/workflows"
+    directory.mkdir(parents=True)
+    (directory / "ci.yml").write_text(yaml.safe_dump(workflow()))
+    (directory / f"extra.{extension}").write_text("jobs: {}\n")
+    with pytest.raises(ValueError, match="aggregate workflow"):
+        main(root=tmp_path)
+
+
+def test_verified_uv_release() -> None:
+    # Compared with upstream v6.8.0's commit ref and uv 0.11.23's published
+    # linux/amd64 archive SHA-256 (also independently hashed during remediation).
+    for job in workflow()["jobs"].values():
+        setup = next(
+            s
+            for s in job["steps"]
+            if s.get("uses", "").startswith("astral-sh/setup-uv@")
+        )
+        assert (
+            setup["uses"]
+            == "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e"
+        )
+        assert setup["with"]["version"] == "0.11.23"
+        assert setup["with"]["checksum"] == (
+            "e12c4cda2fe8c305510a78380a88f2c32a27e90cdcd123cefd2873388f0ebb5f"
+        )
+
+
+@pytest.mark.parametrize(
+    "value", ["", "null", "[]", "{}", '{"quality":{"result":"skipped"}}']
+)
+def test_aggregate_cli_rejects_invalid_results(value: str) -> None:
+    import os
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "scripts/check_ci.py", "--aggregate"],
+        cwd=ROOT,
+        env={**os.environ, "CI_NEEDS": value},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+
+
+def test_aggregate_cli_accepts_successful_results() -> None:
+    import os
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "scripts/check_ci.py", "--aggregate"],
+        cwd=ROOT,
+        env={**os.environ, "CI_NEEDS": '{"quality":{"result":"success"}}'},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

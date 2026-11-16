@@ -36,6 +36,9 @@ def validate(workflow: dict[str, Any], results: dict[str, Any] | None = None) ->
     for event in ("push", "pull_request"):
         if events[event]:
             raise ValueError("Scheduling filters are prohibited")
+    for subject in [workflow, *jobs.values()]:
+        if "shell" in subject.get("defaults", {}).get("run", {}):
+            raise ValueError("defaults.run.shell is prohibited")
     for job in jobs.values():
         if "uses" in job:
             raise ValueError("Reusable workflows must not escape aggregate inspection")

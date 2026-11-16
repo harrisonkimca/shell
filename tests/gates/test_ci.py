@@ -30,6 +30,34 @@ def test_successful_results() -> None:
     validate(workflow(), {"quality": {"result": "success"}})
 
 
+@pytest.mark.parametrize("scope", ["workflow", "quality", "ci"])
+@pytest.mark.parametrize("shell", ["true {0}", "bash"])
+@pytest.mark.parametrize("results", [None, {"quality": {"result": "success"}}])
+def test_default_run_shell_rejected(
+    scope: str, shell: str, results: dict[str, Any] | None
+) -> None:
+    data = workflow()
+    subject = data if scope == "workflow" else data["jobs"][scope]
+    subject["defaults"] = {"run": {"shell": shell}}
+    with pytest.raises(ValueError, match=r"defaults\.run\.shell"):
+        validate(data, results)
+
+
+@pytest.mark.parametrize("job", ["quality", "ci"])
+@pytest.mark.parametrize("shell", ["true {0}", "bash"])
+def test_required_step_shell_validation(job: str, shell: str) -> None:
+    data = workflow()
+    command = next(
+        s for s in data["jobs"][job]["steps"] if "scripts/check" in s.get("run", "")
+    )
+    command["shell"] = shell
+    if shell == "bash":
+        validate(data)
+    else:
+        with pytest.raises(ValueError, match="fail-closed bash shell"):
+            validate(data)
+
+
 @pytest.mark.parametrize("mutation", ["dependency", "new-job", "pin", "filter"])
 def test_invalid_workflow(mutation: str) -> None:
     data = deepcopy(workflow())

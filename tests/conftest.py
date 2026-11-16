@@ -7,6 +7,7 @@ import subprocess
 import sys
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -14,28 +15,39 @@ import pytest
 def pytest_plugin_registered(
     plugin: object, manager: pytest.PytestPluginManager
 ) -> None:
-    source = plugin if inspect.ismodule(plugin) else type(plugin)
-    try:
-        path = Path(inspect.getfile(source)).resolve()
-    except TypeError:
-        return
     root = Path(__file__).resolve()
-    if not path.is_relative_to(root.parents[1]) or path.is_relative_to(
-        Path(sys.prefix).resolve()
-    ):
-        return
-    if any(hasattr(plugin, name) for name in ("collect_ignore", "collect_ignore_glob")):
-        raise pytest.UsageError("Conftest collection ignore lists are forbidden")
-    if path == root:
-        return
     # Historic registration covers earlier conftests as well as late helper
-    # modules and instances. Only the root conftest may implement hooks;
-    # registered hook names include specname aliases and both wrapper protocols.
-    if manager.get_hookcallers(plugin) or hasattr(plugin, "pytest_plugins"):
-        raise pytest.UsageError(
-            f"Repository pytest hooks and plugin declarations are forbidden "
-            f"outside the root conftest: {path}"
-        )
+    # modules and instances. Hook ownership follows the implementation code,
+    # including specname aliases and both wrapper protocols.
+    sources: list[tuple[Any, bool]] = [
+        (plugin if inspect.ismodule(plugin) else type(plugin), False)
+    ]
+    sources.extend(
+        (impl.function, True)
+        for caller in manager.get_hookcallers(plugin) or []
+        for impl in caller.get_hookimpls()
+        if impl.plugin is plugin
+    )
+    for source, is_hook in sources:
+        try:
+            path = Path(inspect.getfile(source)).resolve()
+        except TypeError:
+            continue
+        if not path.is_relative_to(root.parents[1]) or path.is_relative_to(
+            Path(sys.prefix).resolve()
+        ):
+            continue
+        if not is_hook and any(
+            hasattr(plugin, name) for name in ("collect_ignore", "collect_ignore_glob")
+        ):
+            manager.unregister(plugin)
+            raise pytest.UsageError("Conftest collection ignore lists are forbidden")
+        if path != root and (is_hook or hasattr(plugin, "pytest_plugins")):
+            manager.unregister(plugin)
+            raise pytest.UsageError(
+                f"Repository pytest hooks and plugin declarations are forbidden "
+                f"outside the root conftest: {path}"
+            )
 
 
 def pytest_pycollect_makeitem(name: str) -> None:

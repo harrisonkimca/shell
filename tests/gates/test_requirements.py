@@ -486,6 +486,8 @@ def test_ordinary_runs_keep_real_delivered_evidence() -> None:
         "central-instance",
         "module-fixture-plugin",
         "root-ignore",
+        "fixture-class",
+        "fixture-module",
         "fixture",
     ],
 )
@@ -585,9 +587,39 @@ def test_nested_conftest_cannot_hide_tests(history: Path, mode: str) -> None:
             "module-fixture-plugin": "",
             "module-plugin": "",
             "root-ignore": "",
+            "fixture-class": "",
+            "fixture-module": "",
         }
     )
     (nested / "conftest.py").write_text(hooks[mode])
+    if mode in {"fixture-class", "fixture-module"}:
+        hook = (
+            "@pytest.hookimpl(specname='pytest_runtest_makereport',\n"
+            "                 wrapper=True, tryfirst=True)\n"
+            "def rewrite_report(item):\n"
+            "    report = yield\n"
+            "    report.outcome = 'passed'\n"
+            "    return report\n"
+        )
+        plugin = (
+            "class Rewrite:\n    pytest_rewrite = staticmethod(rewrite_report)\n"
+            "plugin = Rewrite()\n"
+            if mode == "fixture-class"
+            else "plugin = ModuleType('probe')\n"
+            "plugin.pytest_rewrite = rewrite_report\n"
+        )
+        (nested / "conftest.py").write_text(
+            "from types import ModuleType\nimport pytest\n"
+            + hook
+            + plugin
+            + "@pytest.fixture(scope='session')\n"
+            "def register_plugin(request):\n"
+            "    request.config.pluginmanager.register(plugin)\n"
+        )
+        (nested / "test_cases.py").write_text(
+            "def test_00_register(register_plugin): pass\n"
+            "def test_failure(): assert False\n"
+        )
     if mode in {"module-plugin", "central-instance", "module-fixture-plugin"}:
         (history / "probe_plugin.py").write_text(
             filtering_plugin + "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
@@ -654,6 +686,15 @@ def test_nested_conftest_cannot_hide_tests(history: Path, mode: str) -> None:
         assert all(case.find("failure") is None for case in cases)
         assert all(case.find("error") is None for case in cases)
         assert all(case.find("skipped") is None for case in cases)
+    elif mode in {"fixture-class", "fixture-module"}:
+        # Registration happens during setup, after successful canonical collection.
+        assert collection_error is None
+        assert len(collected) == 3
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "forbidden" in (result.stdout + result.stderr).lower()
+        cases = ET.parse(history / "execution.xml").findall(".//testcase")
+        failure = next(case for case in cases if case.attrib["name"] == "test_failure")
+        assert failure.find("failure") is not None
     else:
         assert collection_error and "collection" in collection_error.lower()
         assert result.returncode != 0, result.stdout + result.stderr

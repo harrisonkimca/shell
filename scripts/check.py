@@ -48,6 +48,7 @@ def check_locks(root: Path) -> None:
 
 
 def main() -> None:
+    (ROOT / "reports/quality.xml").unlink(missing_ok=True)
     check_locks(ROOT)
     commands = [
         ["ruff", "check", "."],

@@ -57,6 +57,48 @@ def validate(workflow: dict[str, Any], results: dict[str, Any] | None = None) ->
     if "if" in jobs["quality"]:
         raise ValueError("Quality must execute on every run")
     require_command(jobs["quality"], "uv run --locked python scripts/check.py")
+    if "requirements" not in jobs:
+        raise ValueError("Missing requirements job")
+    requirements = jobs["requirements"]
+    producers = required - {"requirements"}
+    if requirements.get("if") != "${{ always() }}":
+        raise ValueError("Requirements must always run")
+    if set(requirements.get("needs", [])) != producers:
+        raise ValueError("Requirements must consume every producer")
+    checkouts = [
+        s
+        for s in requirements["steps"]
+        if s.get("uses", "").startswith("actions/checkout@")
+    ]
+    if (
+        len(checkouts) != 1
+        or checkouts[0].get("with", {}).get("fetch-depth") != 0
+        or "if" in checkouts[0]
+    ):
+        raise ValueError("Requirements need complete checkout history")
+    downloads = [
+        s
+        for s in requirements["steps"]
+        if s.get("uses", "").startswith("actions/download-artifact@")
+    ]
+    if (
+        len(downloads) != len(producers)
+        or any("if" in s for s in downloads)
+        or {s.get("with", {}).get("name") for s in downloads}
+        != {f"{name}-reports" for name in producers}
+        or any(s.get("with", {}).get("path") != "reports" for s in downloads)
+    ):
+        raise ValueError("Requirements must download every producer report")
+    require_command(
+        requirements, "uv run --locked python scripts/check_requirements.py"
+    )
+    dispatch = cast(dict[str, Any], events.get("workflow_dispatch") or {})
+    inputs = cast(dict[str, Any], dispatch.get("inputs", {}))
+    if set(inputs) != {"stage", "expected_main_sha"} or any(
+        value.get("required") is not True or value.get("type") != "string"
+        for value in inputs.values()
+    ):
+        raise ValueError("Exact completion dispatch inputs are required")
     gate = require_command(
         aggregate, "uv run --locked python scripts/check_ci.py --aggregate"
     )

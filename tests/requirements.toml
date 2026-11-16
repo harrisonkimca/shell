@@ -1,0 +1,80 @@
+# Supplemental named parts and deadlines from issue #1's approved Stage 0 plan.
+# IDs, kinds and owning stages come from the spec and roadmap, never this file.
+[[parts]]
+id = "AUTH-ERROR-001"
+kind = "unit test"
+part = "problem-details"
+due = 0
+
+[[parts]]
+id = "NFR-011"
+kind = "configuration check"
+part = "dependency-locks"
+due = 0
+
+[[parts]]
+id = "NFR-011"
+kind = "configuration check"
+part = "image-pins"
+due = 0
+
+[[parts]]
+id = "NFR-011"
+kind = "configuration check"
+part = "build-scans"
+due = 0
+
+[[parts]]
+id = "NFR-013"
+kind = "configuration check"
+part = "database"
+due = 0
+
+[[parts]]
+id = "NFR-013"
+kind = "configuration check"
+part = "schema"
+due = 0
+
+[[parts]]
+id = "NFR-013"
+kind = "configuration check"
+part = "internal-probes"
+due = 0
+
+[[parts]]
+id = "NFR-013"
+kind = "configuration check"
+part = "keys"
+due = 2
+
+[[parts]]
+id = "NFR-013"
+kind = "configuration check"
+part = "deployment-isolation"
+due = 7
+owner = true
+
+[[parts]]
+id = "NFR-024"
+kind = "configuration check"
+part = "trusted-sources"
+due = 0
+
+[[parts]]
+id = "NFR-024"
+kind = "configuration check"
+part = "image-sbom"
+due = 0
+
+[[parts]]
+id = "NFR-024"
+kind = "configuration check"
+part = "javascript-inventory"
+due = 2
+
+[[parts]]
+id = "NFR-024"
+kind = "configuration check"
+part = "final-inventory-review"
+due = 8

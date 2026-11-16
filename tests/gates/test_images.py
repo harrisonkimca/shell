@@ -32,6 +32,8 @@ def configured(tmp_path: Path) -> Path:
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / name, target)
+    for name in ("go", "python", "caddy", "postgres"):
+        shutil.copytree(ROOT / "docker" / name, tmp_path / "docker" / name)
     return tmp_path
 
 
@@ -219,6 +221,140 @@ def test_missing_image_evidence_fails() -> None:
         images.check_coverage({"one", "two"}, {"one": {}})
 
 
+def test_cyclonedx_17_keeps_versions_and_grouping_nodes(tmp_path: Path) -> None:
+    identity = "sha256:" + "a" * 64
+    bom: dict[str, Any] = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.7",
+        "version": 1,
+        "metadata": {
+            "component": {
+                "properties": [
+                    {"name": "aquasecurity:trivy:ImageID", "value": identity},
+                ]
+            }
+        },
+        "components": [
+            {
+                "type": "application",
+                "name": "usr/local/bin/uv",
+                "properties": [
+                    {"name": "aquasecurity:trivy:Class", "value": "lang-pkgs"},
+                    {"name": "aquasecurity:trivy:Type", "value": "rustbinary"},
+                ],
+            },
+            {"type": "library", "name": "libc", "version": "1"},
+        ],
+    }
+    path = tmp_path / "bom.json"
+    path.write_text(json.dumps(bom))
+    assert ("libc", "1") in images.check_sbom(path, identity)
+    del bom["components"][1]["version"]
+    path.write_text(json.dumps(bom))
+    with pytest.raises(ValueError):
+        images.check_sbom(path, identity)
+
+
+@pytest.mark.parametrize(
+    "name", ["REDIS_IMAGE", "MAILPIT_IMAGE", "GO_IMAGE", "UNKNOWN_IMAGE"]
+)
+def test_upstream_rejection_cannot_authorize_unapproved_remediation(name: str) -> None:
+    report = {
+        "SchemaVersion": 2,
+        "Metadata": {"ImageID": "sha256:" + "a" * 64},
+        "Results": [{"Vulnerabilities": [{"Severity": "HIGH", "FixedVersion": "2"}]}],
+    }
+    with pytest.raises(ValueError):
+        images.check_upstream(name, report, "sha256:" + "a" * 64, 42)
+
+
+@pytest.mark.parametrize("name", ["PYTHON_IMAGE", "CADDY_IMAGE", "POSTGRES_IMAGE"])
+def test_only_approved_upstreams_may_enter_preparation(name: str) -> None:
+    identity = "sha256:" + "a" * 64
+    report = {
+        "SchemaVersion": 2,
+        "Metadata": {"ImageID": identity},
+        "Results": [{"Vulnerabilities": [{"Severity": "HIGH", "FixedVersion": "2"}]}],
+    }
+    images.check_upstream(name, report, identity, 42)
+    with pytest.raises(ValueError):
+        images.check_upstream(name, report, identity, 1)
+    with pytest.raises(images.VulnerableImage):
+        images.check_scan(report, identity, 42)
+
+
+def test_loaded_build_identity_rejects_a_different_image() -> None:
+    with pytest.raises(ValueError, match="identity"):
+        images.check_build_identity(
+            {"containerimage.digest": "sha256:" + "a" * 64}, "sha256:" + "b" * 64
+        )
+
+
+def test_os_inventory_retains_distribution_epoch_and_release() -> None:
+    assert (
+        images.package_version({"Epoch": 1, "Version": "1.3.1", "Release": "1+deb13u1"})
+        == "1:1.3.1-1+deb13u1"
+    )
+    assert images.package_version({"Version": "3.24.4-r0"}) == "3.24.4-r0"
+
+
+def test_vulnerable_effective_input_stops_before_dependent_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = "sha256:" + "a" * 64
+    report = {
+        "SchemaVersion": 2,
+        "Metadata": {"ImageID": identity},
+        "Results": [
+            {"Vulnerabilities": [{"Severity": "CRITICAL", "FixedVersion": "2"}]}
+        ],
+    }
+    (tmp_path / "scan.json").write_text(json.dumps(report))
+
+    def unexpected_inspection(reference: str) -> dict[str, Any]:
+        raise AssertionError("Rejected effective image reached dependent use")
+
+    monkeypatch.setattr(images, "local_identity", unexpected_inspection)
+    with pytest.raises(images.VulnerableImage):
+        images.require_effective(
+            tmp_path,
+            {
+                "scan": "scan.json",
+                "image_id": identity,
+                "scanner_status": 42,
+                "reference": "prepared",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation", ["go-source", "go-version", "debian", "toolchain", "raw-app"]
+)
+def test_additional_sources_and_boundaries_are_enforced(
+    configured: Path, mutation: str
+) -> None:
+    if mutation == "go-source":
+        path = configured / "docker/go/go.mod"
+        text = path.read_text().replace(
+            "github.com/caddyserver/xcaddy", "evil.example/xcaddy"
+        )
+    elif mutation == "go-version":
+        path = configured / "docker/go/go.mod"
+        text = path.read_text().replace("v0.4.7", "v99.0.0")
+    elif mutation == "debian":
+        path = configured / "docker/python/debian.sources"
+        text = path.read_text().replace("http://deb.debian.org", "http://evil.example")
+    elif mutation == "toolchain":
+        path = configured / "docker/go/Dockerfile"
+        text = path.read_text().replace("GOTOOLCHAIN=local", "GOTOOLCHAIN=auto")
+    else:
+        path = configured / "docker/api/Dockerfile"
+        text = path.read_text().replace("PREPARED_IMAGE", "PYTHON_IMAGE")
+    path.write_text(text)
+    with pytest.raises((ValueError, KeyError)):
+        images.check_configuration(configured)
+
+
 @pytest.mark.parametrize("architecture", ["amd64", "arm64"])
 def test_identity_inspection_works_with_ci_docker_cli(
     monkeypatch: pytest.MonkeyPatch, architecture: str
@@ -233,3 +369,46 @@ def test_identity_inspection_works_with_ci_docker_cli(
     else:
         with pytest.raises(ValueError, match="platform"):
             images.local_identity("sha256:" + "a" * 64)
+
+
+def test_xcaddy_local_main_wrapper_still_requires_versioned_caddy_library(
+    tmp_path: Path,
+) -> None:
+    identity = "sha256:" + "a" * 64
+    bom: dict[str, Any] = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.7",
+        "version": 1,
+        "metadata": {
+            "component": {
+                "properties": [
+                    {"name": "aquasecurity:trivy:ImageID", "value": identity}
+                ]
+            }
+        },
+        "components": [
+            {
+                "type": "library",
+                "name": "caddy",
+                "purl": "pkg:golang/caddy",
+                "properties": [
+                    {"name": "aquasecurity:trivy:PkgID", "value": "caddy"},
+                    {"name": "aquasecurity:trivy:PkgType", "value": "gobinary"},
+                ],
+            },
+            {
+                "type": "library",
+                "name": "github.com/caddyserver/caddy/v2",
+                "version": "v2.11.9",
+            },
+        ],
+    }
+    path = tmp_path / "bom.json"
+    path.write_text(json.dumps(bom))
+    assert ("github.com/caddyserver/caddy/v2", "v2.11.9") in images.check_sbom(
+        path, identity
+    )
+    del bom["components"][1]["version"]
+    path.write_text(json.dumps(bom))
+    with pytest.raises(ValueError):
+        images.check_sbom(path, identity)

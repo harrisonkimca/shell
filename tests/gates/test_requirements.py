@@ -15,7 +15,7 @@ from scripts import check_requirements as gate
 ROOT = Path(__file__).resolve().parents[2]
 SHA = "a" * 40
 CONTEXT = {"tested_revision": SHA, "run_id": "123", "run_attempt": "2"}
-ASSOCIATION = ("NFR-011", "configuration check", "dependency-locks")
+ASSOCIATION = ("NFR-026", "configuration check", "dependency-locks")
 
 
 def collection() -> dict[str, list[tuple[str, str, str]]]:
@@ -50,9 +50,9 @@ def test_normative_catalogue_and_deadlines() -> None:
     # Fixed supplemental assignments approved in issue #1; not a subject inventory.
     assert {part for part in parts if part[2]} == {
         ("AUTH-ERROR-001", "unit test", "problem-details", 0, False),
-        ("NFR-011", "configuration check", "dependency-locks", 0, False),
-        ("NFR-011", "configuration check", "image-pins", 0, False),
-        ("NFR-011", "configuration check", "build-scans", 0, False),
+        ("NFR-026", "configuration check", "dependency-locks", 0, False),
+        ("NFR-026", "configuration check", "image-pins", 0, False),
+        ("NFR-026", "configuration check", "build-scans", 0, False),
         ("NFR-013", "configuration check", "database", 0, False),
         ("NFR-013", "configuration check", "schema", 0, False),
         ("NFR-013", "configuration check", "internal-probes", 0, False),
@@ -70,8 +70,8 @@ def test_normative_catalogue_and_deadlines() -> None:
     assert gate.due_parts(parts, 0) == {
         ("AUTH-ERROR-001", "unit test", "problem-details"),
         ASSOCIATION,
-        ("NFR-011", "configuration check", "image-pins"),
-        ("NFR-011", "configuration check", "build-scans"),
+        ("NFR-026", "configuration check", "image-pins"),
+        ("NFR-026", "configuration check", "build-scans"),
         ("NFR-013", "configuration check", "database"),
         ("NFR-013", "configuration check", "schema"),
         ("NFR-013", "configuration check", "internal-probes"),
@@ -164,8 +164,8 @@ def test_incomplete_execution_rejected(tmp_path: Path, mutation: str) -> None:
     [
         ("UNKNOWN-001", "unit test", ""),
         ("AUTH-ERROR-002", "unit test", ""),
-        ("NFR-011", "unit test", "dependency-locks"),
-        ("NFR-011", "configuration check", "unknown"),
+        ("NFR-026", "unit test", "dependency-locks"),
+        ("NFR-026", "configuration check", "unknown"),
         ("NFR-013", "configuration check", "deployment-isolation"),
     ],
 )
@@ -331,7 +331,7 @@ def test_real_pytest_reports(history: Path, mode: str) -> None:
         body = "assert False"
     (directory / "test_cases.py").write_text(
         "import pytest\n"
-        "@pytest.mark.req('NFR-011', kind='configuration check', "
+        "@pytest.mark.req('NFR-026', kind='configuration check', "
         "part='dependency-locks')\n"
         "@pytest.mark.parametrize('value', [1, 2])\n"
         f"{marker}def test_values(value): {body}\n"
@@ -457,11 +457,28 @@ def test_ordinary_runs_keep_real_delivered_evidence() -> None:
     assert {
         ASSOCIATION,
         ("AUTH-ERROR-001", "unit test", "problem-details"),
-        ("NFR-011", "configuration check", "image-pins"),
-        ("NFR-011", "configuration check", "build-scans"),
+        ("NFR-026", "configuration check", "image-pins"),
+        ("NFR-026", "configuration check", "build-scans"),
         ("NFR-024", "configuration check", "trusted-sources"),
         ("NFR-024", "configuration check", "image-sbom"),
     } <= associations
+
+
+def test_retired_supply_chain_id_is_invalid_without_moving_deadlines() -> None:
+    catalogue, parts = gate.load_requirements(ROOT)
+    assert "NFR-011" not in catalogue
+    assert catalogue["NFR-026"] == (0, {"configuration check"})
+    assert {(part[2], part[3], part[4]) for part in parts if part[0] == "NFR-026"} == {
+        ("dependency-locks", 0, False),
+        ("image-pins", 0, False),
+        ("build-scans", 0, False),
+    }
+    with pytest.raises(ValueError):
+        gate.validate_associations(
+            {"retired": [("NFR-011", "configuration check", "dependency-locks")]},
+            catalogue,
+            parts,
+        )
 
 
 @pytest.mark.parametrize(

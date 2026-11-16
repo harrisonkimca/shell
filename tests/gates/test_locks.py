@@ -1,4 +1,4 @@
-"""NFR-011 dependency locks, including rejection fixtures."""
+"""NFR-026 dependency locks, including rejection fixtures."""
 
 import shutil
 from pathlib import Path
@@ -10,7 +10,7 @@ from scripts.check import check_locks
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.req("NFR-011", kind="configuration check", part="dependency-locks")
+@pytest.mark.req("NFR-026", kind="configuration check", part="dependency-locks")
 def test_dependency_locks() -> None:
     check_locks(ROOT)
 

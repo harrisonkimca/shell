@@ -183,7 +183,7 @@ def test_additional_workflow_rejected(tmp_path: Path, extension: str) -> None:
 
 
 def test_verified_uv_release() -> None:
-    # Compared with upstream v6.8.0's commit ref and uv 0.11.23's published
+    # Compared with upstream v6.8.0's commit ref and uv 0.13.8's published
     # linux/amd64 archive SHA-256 (also independently hashed during remediation).
     for job in workflow()["jobs"].values():
         setup = next(
@@ -195,9 +195,9 @@ def test_verified_uv_release() -> None:
             setup["uses"]
             == "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e"
         )
-        assert setup["with"]["version"] == "0.11.23"
+        assert setup["with"]["version"] == "0.13.8"
         assert setup["with"]["checksum"] == (
-            "e12c4cda2fe8c305510a78380a88f2c32a27e90cdcd123cefd2873388f0ebb5f"
+            "5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91"
         )
 
 

@@ -7,19 +7,19 @@ part = "problem-details"
 due = 0
 
 [[parts]]
-id = "NFR-011"
+id = "NFR-026"
 kind = "configuration check"
 part = "dependency-locks"
 due = 0
 
 [[parts]]
-id = "NFR-011"
+id = "NFR-026"
 kind = "configuration check"
 part = "image-pins"
 due = 0
 
 [[parts]]
-id = "NFR-011"
+id = "NFR-026"
 kind = "configuration check"
 part = "build-scans"
 due = 0

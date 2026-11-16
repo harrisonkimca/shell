@@ -105,6 +105,10 @@ def test_environment_selection_is_required_before_dotenv(
     start: Callable[[], object],
     environment: str | None,
 ) -> None:
+    monkeypatch.setattr(
+        "shell_api.main.uvicorn.run",
+        Mock(side_effect=AssertionError("server started before settings validation")),
+    )
     monkeypatch.delenv("SHELL_ENV", raising=False)
     if environment is not None:
         monkeypatch.setenv("SHELL_ENV", environment)

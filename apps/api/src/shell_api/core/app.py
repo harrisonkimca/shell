@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 
-from shell_api.core.settings import load_settings
+from shell_api.core.settings import Settings, load_settings
 from shell_api.shared.domain.errors import Conflict, ProviderUnavailable
 from shell_api.shared.presentation.errors import (
     CorrelationMiddleware,
@@ -13,8 +13,9 @@ from shell_api.shared.presentation.errors import (
 )
 
 
-def create_app() -> FastAPI:
-    load_settings()
+def create_app(settings: Settings | None = None) -> FastAPI:
+    if settings is None:
+        load_settings()
     error_response = {
         "description": "Shell error (stable codes translated by clients)",
         "content": {
@@ -23,6 +24,12 @@ def create_app() -> FastAPI:
     }
     app = FastAPI(
         debug=False,
+        telemetry={
+            "tracing": False,
+            "metrics": False,
+            "logs": False,
+            "auto_configure": False,
+        },
         docs_url=None,
         redoc_url=None,
         openapi_url=None,

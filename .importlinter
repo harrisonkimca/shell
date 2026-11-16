@@ -35,6 +35,7 @@ forbidden_modules =
     redis
     arq
     httpx
+    httpx2
     authlib
     jwt
     jinja2
@@ -114,6 +115,7 @@ forbidden_modules =
     authlib
     jwt
     httpx
+    httpx2
     jinja2
     babel
 allow_indirect_imports = True

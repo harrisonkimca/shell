@@ -11,8 +11,7 @@ __all__ = ["create_app"]
 def serve() -> None:
     settings = load_settings()
     uvicorn.run(
-        "shell_api.main:create_app",
-        factory=True,
+        create_app(settings),
         host=str(settings.host),
         port=settings.port,
         proxy_headers=False,

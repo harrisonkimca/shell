@@ -1,5 +1,6 @@
 """Workflow aggregate enforcement (AGENTS.md, approved slice 1)."""
 
+import json
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -20,19 +21,30 @@ def test_actual_workflow() -> None:
     validate(workflow())
 
 
+@pytest.mark.parametrize("job", ["quality", "requirements"])
 @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", None])
-def test_unsuccessful_or_missing_result(result: str | None) -> None:
+def test_unsuccessful_or_missing_result(job: str, result: str | None) -> None:
+    results: dict[str, Any] = {
+        name: {"result": "success"} for name in workflow()["jobs"] if name != "ci"
+    }
+    results[job] = {"result": result}
     with pytest.raises(ValueError):
-        validate(workflow(), {"quality": {"result": result}})
+        validate(workflow(), results)
 
 
 def test_successful_results() -> None:
-    validate(workflow(), {"quality": {"result": "success"}})
+    validate(
+        workflow(),
+        {job: {"result": "success"} for job in workflow()["jobs"] if job != "ci"},
+    )
 
 
-@pytest.mark.parametrize("scope", ["workflow", "quality", "ci"])
+@pytest.mark.parametrize("scope", ["workflow", "quality", "requirements", "ci"])
 @pytest.mark.parametrize("shell", ["true {0}", "bash"])
-@pytest.mark.parametrize("results", [None, {"quality": {"result": "success"}}])
+@pytest.mark.parametrize(
+    "results",
+    [None, {job: {"result": "success"} for job in workflow()["jobs"] if job != "ci"}],
+)
 def test_default_run_shell_rejected(
     scope: str, shell: str, results: dict[str, Any] | None
 ) -> None:
@@ -43,7 +55,7 @@ def test_default_run_shell_rejected(
         validate(data, results)
 
 
-@pytest.mark.parametrize("job", ["quality", "ci"])
+@pytest.mark.parametrize("job", ["quality", "requirements", "ci"])
 @pytest.mark.parametrize("shell", ["true {0}", "bash"])
 def test_required_step_shell_validation(job: str, shell: str) -> None:
     data = workflow()
@@ -212,9 +224,69 @@ def test_aggregate_cli_accepts_successful_results() -> None:
     result = subprocess.run(
         [sys.executable, "scripts/check_ci.py", "--aggregate"],
         cwd=ROOT,
-        env={**os.environ, "CI_NEEDS": '{"quality":{"result":"success"}}'},
+        env={
+            **os.environ,
+            "CI_NEEDS": json.dumps(
+                {
+                    job: {"result": "success"}
+                    for job in workflow()["jobs"]
+                    if job != "ci"
+                }
+            ),
+        },
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing-job",
+        "not-always",
+        "missing-producer",
+        "missing-report",
+        "filtered-download",
+        "shallow",
+        "missing-dispatch",
+        "conditional-verifier",
+    ],
+)
+def test_requirements_execution_enforced(mutation: str) -> None:
+    data = workflow()
+    requirements = data["jobs"]["requirements"]
+    if mutation == "missing-job":
+        del data["jobs"]["requirements"]
+        data["jobs"]["ci"]["needs"].remove("requirements")
+    elif mutation == "not-always":
+        requirements.pop("if")
+    elif mutation == "missing-producer":
+        requirements["needs"] = []
+    elif mutation == "shallow":
+        requirements["steps"][0]["with"]["fetch-depth"] = 1
+    elif mutation == "missing-dispatch":
+        data["on"]["workflow_dispatch"] = None
+    elif mutation == "missing-report":
+        requirements["steps"] = [
+            s
+            for s in requirements["steps"]
+            if not s.get("uses", "").startswith("actions/download-artifact@")
+        ]
+    elif mutation == "filtered-download":
+        download = next(
+            s
+            for s in requirements["steps"]
+            if s.get("uses", "").startswith("actions/download-artifact@")
+        )
+        download["if"] = "${{ success() }}"
+    else:
+        command = next(
+            s
+            for s in requirements["steps"]
+            if "scripts/check_requirements.py" in s.get("run", "")
+        )
+        command["if"] = "${{ false }}"
+    with pytest.raises(ValueError):
+        validate(data)

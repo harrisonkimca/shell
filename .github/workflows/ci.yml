@@ -3,6 +3,15 @@ name: CI
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      stage:
+        description: Stage to verify cumulatively
+        required: true
+        type: string
+      expected_main_sha:
+        description: Exact final main revision
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
@@ -20,11 +29,29 @@ jobs:
         if: ${{ always() }}
         with:
           name: quality-reports
-          path: reports/
+          path: reports/quality.xml
           if-no-files-found: error
-  ci:
+  requirements:
     if: ${{ always() }}
     needs: [quality]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: '0.11.23'
+          checksum: e12c4cda2fe8c305510a78380a88f2c32a27e90cdcd123cefd2873388f0ebb5f
+      - run: uv sync --locked
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: quality-reports
+          path: reports
+      - run: uv run --locked python scripts/check_requirements.py
+  ci:
+    if: ${{ always() }}
+    needs: [quality, requirements]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1

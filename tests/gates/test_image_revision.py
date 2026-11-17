@@ -189,6 +189,8 @@ def test_effective_coverage_rejected_at_pipeline_boundary(
         "reference": "test",
         "selected": "test",
         "scan": "t.json",
+        "unrated_scan": "t.json",
+        "unrated_status": 0,
         "grype_scan": "g.json",
         "sbom": "bom.json",
         "trivy_sbom": "t-bom.json",

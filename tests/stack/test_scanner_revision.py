@@ -215,3 +215,63 @@ def test_real_grype_stale_database_is_not_accepted(
     )
     assert result.returncode != 0
     assert "old" in result.stderr.lower() or "age" in result.stderr.lower()
+
+
+@pytest.mark.req("NFR-026", kind="configuration check", part="scanner-policy-rejection")
+@pytest.mark.parametrize("state", ["fixed", "unknown"])
+def test_real_trivy_preserves_and_rejects_unrated_findings(state: str) -> None:
+    # Controlled native-report fixture exercises the pinned scanner's actual
+    # filtering. It does not claim discovery of a real UNKNOWN advisory.
+    output = ROOT / "reports/images"
+    output.mkdir(parents=True, exist_ok=True)
+    identity = "sha256:" + "a" * 64
+    source = output / f"unrated-{state}.fixture.json"
+    converted = output / f"unrated-{state}.filtered.json"
+    report: dict[str, Any] = {
+        "SchemaVersion": 2,
+        "ArtifactName": "controlled-unrated-fixture",
+        "ArtifactType": "container_image",
+        "Metadata": {"ImageID": identity},
+        "Results": [
+            {"Target": "controlled-fixture", "Class": "lang-pkgs", "Type": "gobinary"}
+        ],
+    }
+
+    def convert() -> dict[str, Any]:
+        status = images.scanner(
+            ROOT,
+            "convert",
+            "--config",
+            "docker/trivy.yaml",
+            "--ignorefile",
+            "/dev/null",
+            "--severity",
+            "UNKNOWN",
+            "--exit-code",
+            "0",
+            "--format",
+            "json",
+            "--output",
+            str(converted.relative_to(ROOT)),
+            str(source.relative_to(ROOT)),
+        )
+        assert status == 0
+        return json.loads(converted.read_text())
+
+    source.write_text(json.dumps(report))
+    images.check_scan(convert(), identity, 0)
+    shutil.copy2(converted, output / f"unrated-{state}.baseline.json")
+    finding = {
+        "VulnerabilityID": "TEST-UNRATED",
+        "PkgName": "controlled-fixture",
+        "InstalledVersion": "1",
+        "Severity": "UNKNOWN",
+        "Status": state,
+        "FixedVersion": "2" if state == "fixed" else "",
+    }
+    report["Results"] = [{"Target": "controlled-fixture", "Vulnerabilities": [finding]}]
+    source.write_text(json.dumps(report))
+    filtered = convert()
+    assert filtered["Results"][0]["Vulnerabilities"][0]["Severity"] == "UNKNOWN"
+    with pytest.raises(images.VulnerableImage, match="Blocking vulnerabilities"):
+        images.check_scan(filtered, identity, 0)

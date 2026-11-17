@@ -443,7 +443,8 @@ def build_inputs(root: Path, arguments: dict[str, str]) -> list[str]:
         directories[:] = [
             d
             for d in directories
-            if not d.startswith(".") and d not in {"reports", "__pycache__"}
+            if d != "__pycache__"
+            and not (directory == root and (d.startswith(".") or d == "reports"))
         ]
     paths.sort()
     expected = sorted(root / f"docker/{name}/Dockerfile" for name in RECIPES)
@@ -638,7 +639,15 @@ def check_scan(report: dict[str, Any], identity: str, status: int) -> None:
         v
         for result in report["Results"]
         for v in result.get("Vulnerabilities", [])
-        if v.get("FixedVersion") and v.get("Severity") in {"HIGH", "CRITICAL"}
+        if (v.get("FixedVersion") and v.get("Severity") in {"HIGH", "CRITICAL"})
+        or (
+            v.get("Severity") not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+            and (
+                v.get("FixedVersion")
+                or v.get("Status")
+                not in {"will_not_fix", "end_of_life", "not_affected"}
+            )
+        )
     ]
     if findings:
         raise VulnerableImage(findings)
@@ -670,6 +679,11 @@ def require_effective(root: Path, item: dict[str, Any]) -> None:
         json.loads((root / item["scan"]).read_text()),
         item["image_id"],
         item["scanner_status"],
+    )
+    check_scan(
+        json.loads((root / item["unrated_scan"]).read_text()),
+        item["image_id"],
+        item["unrated_status"],
     )
     check_grype(
         json.loads((root / item["grype_scan"]).read_text()),
@@ -1094,6 +1108,36 @@ def run_pipeline(
         save()
         if not verify:
             return item
+        # Keep the independent HIGH/CRITICAL policy unchanged. A second native
+        # report includes unresolved UNKNOWN findings that ignore-unfixed would
+        # discard. JSON policy validation, not the supplemental exit threshold,
+        # decides which UNKNOWN fix states block.
+        unrated = Path("reports/images") / (name + ".unrated.scan.json")
+        (root / unrated).unlink(missing_ok=True)
+        unrated_status = scanner(
+            root,
+            "image",
+            "--config",
+            "docker/trivy.yaml",
+            "--ignorefile",
+            "/dev/null",
+            "--image-src",
+            "docker",
+            "--platform",
+            PLATFORM,
+            "--severity",
+            "UNKNOWN",
+            "--ignore-unfixed=false",
+            "--exit-code",
+            "0",
+            "--format",
+            "json",
+            "--output",
+            str(unrated),
+            identity["Id"],
+        )
+        item.update(unrated_scan=str(unrated), unrated_status=unrated_status)
+        save()
         grype_path = output / (name + ".grype.json")
         bom = output / (name + ".cdx.json")
         grype_status = grype(root, identity["Id"], grype_path, bom, database)
@@ -1117,8 +1161,19 @@ def run_pipeline(
                 raise
         if upstream:
             check_upstream(upstream, report, identity["Id"], status)
+            check_upstream(
+                upstream,
+                json.loads((root / unrated).read_text()),
+                identity["Id"],
+                unrated_status,
+            )
         else:
             check_scan(report, identity["Id"], status)
+            check_scan(
+                json.loads((root / unrated).read_text()),
+                identity["Id"],
+                unrated_status,
+            )
         if status == 0 and grype_accepted:
             evidence["events"].append("pass:" + name)
         save()

@@ -30,6 +30,8 @@ from tests.gates.test_images import configured as configured
         ".python-version",
         "apps/api/src",
         "apps/api/src/shell_api/main.py",
+        "apps/api/src/.assets",
+        "apps/api/src/.assets/input",
         "apps/api/src/shell_api",
         "apps/api",
         "apps",
@@ -41,6 +43,8 @@ def test_symbolic_build_inputs_rejected(
     configured: Path, tmp_path: Path, path: str
 ) -> None:
     shutil.copytree(ROOT / "apps/api/src", configured / "apps/api/src")
+    (configured / "apps/api/src/.assets").mkdir()
+    (configured / "apps/api/src/.assets/input").write_text("asset")
     shutil.copy(ROOT / ".dockerignore", configured / ".dockerignore")
     images.check_configuration(configured)
     source = configured / path

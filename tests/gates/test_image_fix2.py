@@ -148,6 +148,8 @@ def test_each_scanner_blocks_dependent_use(
         "docker": identity,
         "reference": "prepared",
         "scan": "t.json",
+        "unrated_scan": "t.json",
+        "unrated_status": 0,
         "scanner_status": 0,
         "grype_scan": "g.json",
         "grype_status": 0,
@@ -299,7 +301,9 @@ def test_local_preparation_invokes_no_scanner(
 
 
 @pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
-@pytest.mark.parametrize("tool", ["trivy", "grype"])
+@pytest.mark.parametrize(
+    "tool", ["trivy", "grype", "trivy-unrated-fixed", "trivy-unrated-unresolved"]
+)
 def test_pipeline_stops_on_either_scanner_rejection(
     configured: Path, monkeypatch: pytest.MonkeyPatch, tool: str
 ) -> None:
@@ -343,6 +347,24 @@ def test_pipeline_stops_on_either_scanner_rejection(
             if reject
             else [],
         }
+        if path.name.endswith(".unrated.scan.json"):
+            assert args[args.index("--severity") + 1] == "UNKNOWN"
+            assert "--ignore-unfixed=false" in args
+            assert args[args.index("--exit-code") + 1] == "0"
+            if tool.startswith("trivy-unrated") and path.name.startswith(
+                "MAILPIT_IMAGE."
+            ):
+                report["Results"] = [
+                    {
+                        "Vulnerabilities": [
+                            {
+                                "Severity": "UNKNOWN",
+                                "Status": "unknown",
+                                "FixedVersion": "2" if tool.endswith("fixed") else "",
+                            }
+                        ]
+                    }
+                ]
         path.write_text(json.dumps(report))
         return 42 if reject else 0
 

@@ -640,7 +640,7 @@ def platform_digest(index: dict[str, Any], architecture: str = "amd64") -> str:
 class VulnerableImage(ValueError):
     def __init__(self, findings: list[dict[str, Any]]) -> None:
         self.findings = findings
-        super().__init__(f"Fixable HIGH/CRITICAL vulnerabilities: {findings}")
+        super().__init__(f"Blocking HIGH/CRITICAL vulnerabilities: {findings}")
 
 
 def check_scan(report: dict[str, Any], identity: str, status: int) -> None:
@@ -1086,7 +1086,15 @@ def run_pipeline(
             return
         bom = Path("reports/images") / (name + ".trivy.cdx.json")
         if scanner(
-            root, "convert", "--format", "cyclonedx", "--output", str(bom), item["scan"]
+            root,
+            "convert",
+            "--config",
+            "docker/trivy.yaml",
+            "--format",
+            "cyclonedx",
+            "--output",
+            str(bom),
+            item["scan"],
         ):
             raise ValueError("SBOM generation failed")
         packages = check_sbom(root / bom, item["image_id"])
@@ -1191,7 +1199,6 @@ def run_pipeline(
         evidence["inputs"][name] = item
         del evidence[name]
         save()
-    check_coverage(set(pins), evidence["inputs"])
     inputs = evidence["inputs"]
     builder = build(
         "builder",
@@ -1287,8 +1294,38 @@ def expected_effective(root: Path = ROOT) -> set[str]:
 
 
 def check_effective_coverage(root: Path, evidence: dict[str, Any]) -> None:
-    check_coverage(expected_effective(root), evidence["effective"])
-    for item in evidence["effective"].values():
+    expected = expected_effective(root)
+    check_coverage(expected, evidence["effective"])
+    for role in expected:
+        item = evidence["effective"][role]
+        recipe = {"builder": "go", "application": "api", "REDIS_IMAGE": "redis"}.get(
+            role, role
+        )
+        build_name = "redis" if role == "REDIS_IMAGE" else role
+        if build_name in evidence["builds"]:
+            build = evidence["builds"][build_name]
+            if build["image_id"] != item["image_id"] or build["recipe"] != recipe:
+                raise ValueError("Effective build/role association mismatch")
+            bindings = {
+                key: evidence["effective"][
+                    "builder" if key == "BUILDER_IMAGE" else "python"
+                ]["reference"]
+                if key in LOCAL
+                else evidence["inputs"][key]["selected"]
+                for key in RECIPES[recipe]
+            }
+            if build["arguments"] != bindings:
+                raise ValueError("Effective build/input association mismatch")
+        else:
+            source = {"caddy": "CADDY_IMAGE", "postgres": "POSTGRES_IMAGE"}.get(
+                role, role
+            )
+            original = evidence["inputs"][source]
+            if (
+                item["image_id"] != original["image_id"]
+                or item["reference"] != original["selected"]
+            ):
+                raise ValueError("Effective upstream/role association mismatch")
         require_effective(root, item)
         check_grype_sbom(root / item["sbom"], item["image_id"])
         check_sbom(root / item["trivy_sbom"], item["image_id"])
@@ -1315,7 +1352,10 @@ def prepared_references(
     references: dict[str, str] = {}
     for role in ("application", "caddy", "postgres", "REDIS_IMAGE", "MAILPIT_IMAGE"):
         item = evidence["effective"][role]
-        if local_identity(item["reference"])["Id"] != item["image_id"]:
+        if (
+            local_identity(item["reference"], evidence["platform"])["Id"]
+            != item["image_id"]
+        ):
             raise ValueError("Prepared image identity changed")
         references[role] = item["image_id"]
     return references

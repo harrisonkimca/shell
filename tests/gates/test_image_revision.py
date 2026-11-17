@@ -169,7 +169,7 @@ def test_effective_coverage_rejected_at_pipeline_boundary(
         "scanner_status": 0,
         "grype_status": 0,
     }
-    evidence = {
+    evidence: dict[str, Any] = {
         "effective": {k: copy.deepcopy(item) for k in images.expected_effective()},
         "builds": {},
     }
@@ -242,3 +242,38 @@ def test_caddy_keeps_upstream_permitted_only_file_capability() -> None:
     recipe = (images.ROOT / "docker/caddy/Dockerfile").read_text()
     assert "setcap cap_net_bind_service=+p /usr/bin/caddy" in recipe
     assert "--chown=1001:1001" in recipe
+
+
+@pytest.mark.req("NFR-024", kind="configuration check", part="coverage-rejection")
+def test_correct_scan_cannot_be_assigned_to_another_effective_role(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def no_effective_check(root: Path, item: dict[str, Any]) -> None:
+        pass
+
+    def inventory(path: Path, identity: str) -> set[tuple[str, str]]:
+        return {("libc", "1")}
+
+    def roles(root: Path = images.ROOT) -> set[str]:
+        return {"python"}
+
+    monkeypatch.setattr(images, "expected_effective", roles)
+    monkeypatch.setattr(images, "require_effective", no_effective_check)
+    monkeypatch.setattr(images, "check_sbom", inventory)
+    monkeypatch.setattr(images, "check_grype_sbom", inventory)
+    evidence: dict[str, Any] = {
+        "effective": {
+            "python": {
+                "image_id": "redis-image",
+                "sbom": "bom",
+                "trivy_sbom": "t-bom",
+                "installed": {"os": {"libc": "1"}},
+            }
+        },
+        "builds": {
+            "python": {"image_id": "python-image", "recipe": "python", "arguments": {}}
+        },
+        "inputs": {},
+    }
+    with pytest.raises(ValueError, match="association"):
+        images.check_effective_coverage(tmp_path, evidence)

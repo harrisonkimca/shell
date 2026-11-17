@@ -205,6 +205,15 @@ def test_services_preserve_modules_entrypoint_and_privilege_behavior(
         "--rm",
         "-v",
         f"{binary}:/original-caddy:ro",
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "1001:1001",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
         "--entrypoint",
         "/original-caddy",
         caddy["image_id"],
@@ -439,16 +448,50 @@ def test_real_scanner_errors_cannot_satisfy_vulnerability_verification(
 
 @pytest.mark.req("NFR-026", kind="configuration check", part="database-rejection")
 @pytest.mark.parametrize("failure", ["missing", "unusable", "update"])
-def test_real_trivy_missing_database_is_fatal(tmp_path: Path, failure: str) -> None:
-    # Same pinned scanner and policy; skip-update is confined to this negative
-    # fixture so an empty database cannot accidentally become a valid result.
+def test_real_trivy_missing_database_is_fatal(
+    tmp_path: Path,
+    failure: str,
+    capfd: pytest.CaptureFixture[str],
+    scanner_image: dict[str, Any],
+) -> None:
+    identity = scanner_image["Id"]
+    status = images.scanner(
+        ROOT,
+        "image",
+        "--config",
+        "docker/trivy.yaml",
+        "--image-src",
+        "docker",
+        "--format",
+        "json",
+        "--output",
+        "reports/images/db-baseline.json",
+        identity,
+    )
+    assert status == 42
+    with pytest.raises(images.VulnerableImage):
+        images.check_scan(
+            json.loads((ROOT / "reports/images/db-baseline.json").read_text()),
+            identity,
+            status,
+        )
+    capfd.readouterr()
     for name in ("trivy", "grype"):
         (tmp_path / "docker").mkdir(exist_ok=True)
         shutil.copy(ROOT / f"docker/{name}.yaml", tmp_path / f"docker/{name}.yaml")
-    if failure == "unusable":
-        database = tmp_path / ".cache/trivy/db"
-        database.mkdir(parents=True)
-        (database / "trivy.db").write_text("unusable vulnerability database")
+    database = tmp_path / "db"
+    if failure == "update":
+        shutil.copytree(images.trivy_database(), database)
+        metadata = database / "db/metadata.json"
+        data = json.loads(metadata.read_text())
+        data["NextUpdate"] = "2000-01-01T00:00:00Z"
+        metadata.write_text(json.dumps(data))
+    elif failure == "unusable":
+        (database / "db").mkdir(parents=True)
+        shutil.copy(
+            images.trivy_database() / "db/metadata.json", database / "db/metadata.json"
+        )
+        (database / "db/trivy.db").write_text("unusable vulnerability database")
     status = images.scanner(
         tmp_path,
         "image",
@@ -457,10 +500,23 @@ def test_real_trivy_missing_database_is_fatal(tmp_path: Path, failure: str) -> N
         *(["--skip-db-update"] if failure != "update" else []),
         "--image-src",
         "docker",
-        "sha256:" + "f" * 64,
+        identity,
         offline=True,
+        database=database,
     )
+    captured = capfd.readouterr()
+    diagnostic = captured.out + captured.err
     assert status not in {0, 42}
+    assert "database" in diagnostic.lower() or "db error" in diagnostic.lower(), (
+        diagnostic
+    )
+    expected = {
+        "missing": "first run",
+        "unusable": "invalid database",
+        "update": "failed to download",
+    }[failure]
+    assert expected in diagnostic.lower(), diagnostic
+    (ROOT / "reports/images" / f"trivy-db-{failure}.log").write_text(diagnostic)
 
 
 @pytest.mark.req("NFR-024", kind="configuration check", part="coverage-rejection")

@@ -151,7 +151,16 @@ def test_real_grype_database_update_failures_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
     scanner_database: Path,
     failure: str,
+    capfd: pytest.CaptureFixture[str],
+    scanner_image: dict[str, Any],
 ) -> None:
+    identity = scanner_image
+    report, bom = tmp_path / "r.json", tmp_path / "b.json"
+    status = images.grype(ROOT, identity["Id"], report, bom, scanner_database)
+    assert status == 0
+    assert json.loads(report.read_text())["source"]["target"]["layers"]
+    shutil.copy2(report, ROOT / "reports/images" / f"grype-db-{failure}.baseline.json")
+    capfd.readouterr()
     if failure == "update":
         database = scanner_database
     else:
@@ -159,11 +168,25 @@ def test_real_grype_database_update_failures_fail_closed(
         if failure == "unusable":
             (database / "6").mkdir(parents=True)
             (database / "6/vulnerability.db").write_text("unusable database")
+    if failure == "missing":
+        assert not (database / "6/vulnerability.db").exists()
+    if failure == "update":
+        assert (database / "6/vulnerability.db").is_file()
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
     monkeypatch.setenv("NO_PROXY", "")
     report, bom = tmp_path / "r.json", tmp_path / "b.json"
-    status = images.grype(ROOT, "sha256:" + "f" * 64, report, bom, database)
+    status = images.grype(ROOT, identity["Id"], report, bom, database)
+    captured = capfd.readouterr()
+    diagnostic = captured.out + captured.err
+    assert "database" in diagnostic.lower(), diagnostic
+    assert "update" in diagnostic.lower() or "does not exist" in diagnostic.lower(), (
+        diagnostic
+    )
+    assert "connection refused" in diagnostic.lower(), diagnostic
+    if failure == "unusable":
+        assert "file is not a database" in diagnostic.lower(), diagnostic
+    (ROOT / "reports/images" / f"grype-db-{failure}.log").write_text(diagnostic)
     assert status != 0
     with pytest.raises(ValueError, match="Grype scanner error"):
         images.check_grype({}, {}, status)

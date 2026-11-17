@@ -39,11 +39,6 @@ jobs:
         with:
           version: '0.13.8'
           checksum: 5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: .cache/trivy
-          key: trivy-0.76.2-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: trivy-0.76.2-${{ runner.os }}-
       - run: uv sync --locked
       - run: uv run --locked python scripts/images.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

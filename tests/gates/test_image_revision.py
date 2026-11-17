@@ -56,11 +56,33 @@ def test_go_alternate_whitespace_fails(configured: Path, line: str) -> None:
 
 @pytest.mark.req("NFR-024", kind="configuration check", part="source-rejection")
 @pytest.mark.parametrize(
-    "path", ["Dockerfile", "docker/api/Dockerfile.foo", "compose.yaml"]
+    "path",
+    [
+        "Dockerfile",
+        "docker/api/Dockerfile.foo",
+        "Dockerfile.prod",
+        "Containerfile",
+        "containerfile.dev",
+        "compose.yaml",
+        "compose.yml",
+        "compose.override.yaml",
+        "compose.override.yml",
+        "docker-compose.yaml",
+        "docker-compose.yml",
+        "docker-compose.override.yaml",
+        "docker-compose.override.yml",
+        "docker-bake.hcl",
+        "docker-bake.json",
+        "docker-bake.override.hcl",
+        "docker-bake.override.json",
+        "docker/api/Dockerfile.dockerignore",
+        "docker/api/custom.dockerignore",
+    ],
 )
 def test_unhandled_build_configuration_fails(configured: Path, path: str) -> None:
+    images.check_configuration(configured)
     (configured / path).write_text("FROM evil/image:latest\n")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Every build configuration"):
         images.check_configuration(configured)
 
 
@@ -239,7 +261,7 @@ def test_effective_coverage_rejected_at_pipeline_boundary(
         expected = "bom.json"
     else:
         evidence["effective"]["python"]["image_id"] = "wrong"
-        expected = "association"
+        expected = "build/role association"
     with pytest.raises((ValueError, OSError), match=expected):
         images.check_effective_coverage(configured, evidence)
 

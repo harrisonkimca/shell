@@ -278,7 +278,8 @@ REMEDIATIONS = {
 # Exact supported recipes. Changes to commands, ENV, COPY inputs or instruction
 # order need a reviewed extension here. This is an allowlist, not a shell parser.
 # Shell bodies are compared verbatim; no quoting, expansion or comments are
-# interpreted by this gate. Only whole-line comments and continuations normalize.
+# interpreted by this gate. Only whole-line comments and the restricted
+# space-backslash-newline-space continuation normalize.
 SUPPORTED_BUILDS = {
     "go": (
         "ARG GO_IMAGE",
@@ -408,7 +409,16 @@ def instructions(path: Path) -> tuple[str, ...]:
     text = "\n".join(
         line for line in text.split("\n") if not line.lstrip().startswith("#")
     )
-    text = re.sub(r"\\[ \t]*\n[ \t]*", " ", text)
+    for line, following in zip(text.split("\n"), text.split("\n")[1:] + [""]):
+        if line.rstrip(" \t").endswith("\\") and (
+            not line.endswith(" \\")
+            or line.endswith("\t\\")
+            or not following.startswith(" ")
+            or not following.strip()
+            or "\t" in line + following
+        ):
+            raise ValueError("Unsupported Docker continuation")
+    text = text.replace(" \\\n ", "  ")
     return tuple(
         line.strip()
         for line in text.split("\n")
@@ -417,19 +427,25 @@ def instructions(path: Path) -> tuple[str, ...]:
 
 
 def build_inputs(root: Path, arguments: dict[str, str]) -> list[str]:
-    paths = sorted(
-        p
-        for p in root.rglob("*")
-        if not any(
-            part.startswith(".") or part in {"reports", "__pycache__"}
-            for part in p.relative_to(root).parts
-        )
-        and (
-            "dockerfile" in p.name.lower()
-            or "containerfile" in p.name.lower()
-            or p.name.startswith(("compose.", "docker-compose.", "docker-bake."))
-        )
-    )
+    paths: list[Path] = []
+    for directory, directories, files in root.walk(follow_symlinks=False):
+        for entry in [*directories, *files]:
+            path = directory / entry
+            if path.is_symlink():
+                raise ValueError("Unapproved symbolic build input")
+            if (
+                "dockerfile" in entry.lower()
+                or "containerfile" in entry.lower()
+                or (entry.endswith(".dockerignore") and entry != ".dockerignore")
+                or entry.startswith(("compose.", "docker-compose.", "docker-bake."))
+            ):
+                paths.append(path)
+        directories[:] = [
+            d
+            for d in directories
+            if not d.startswith(".") and d not in {"reports", "__pycache__"}
+        ]
+    paths.sort()
     expected = sorted(root / f"docker/{name}/Dockerfile" for name in RECIPES)
     if paths != expected:
         raise ValueError("Every build configuration needs an enforced build/scan path")
@@ -442,27 +458,6 @@ def build_inputs(root: Path, arguments: dict[str, str]) -> list[str]:
             raise ValueError("Unsupported non-ASCII Docker input") from error
         if actual != SUPPORTED_BUILDS[name]:
             raise ValueError(f"Unapproved build operations or arguments: {name}")
-        # Exact instruction equality binds both COPY operands to these validated
-        # files. Reject symbolic links so Docker cannot copy a different input.
-        for source in (
-            recipe,
-            *(
-                root / f"docker/{name}/{f}"
-                for f in (
-                    ("go.mod", "go.sum")
-                    if name in {"go", "caddy", "postgres"}
-                    else ("debian.sources",)
-                    if name == "python"
-                    else ()
-                )
-            ),
-        ):
-            if any(
-                p.is_symlink()
-                for p in (source, *source.parents)
-                if p == root or root in p.parents
-            ):
-                raise ValueError("Unapproved symbolic build input")
         external.extend(arguments[key] for key in keys if key not in LOCAL)
     return external
 

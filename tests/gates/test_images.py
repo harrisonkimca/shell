@@ -200,10 +200,12 @@ def test_sbom_rejection(tmp_path: Path, mutation: str) -> None:
 @pytest.mark.parametrize("status", [1, 2, 42])
 @pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_scanner_errors_and_unsubstantiated_rejection_fail(status: int) -> None:
-    with pytest.raises(ValueError):
-        images.check_scan(
-            {"Metadata": {"ImageID": "wrong"}}, "sha256:" + "a" * 64, status
-        )
+    identity = "sha256:" + "a" * 64
+    report = {"SchemaVersion": 2, "Metadata": {"ImageID": identity}, "Results": []}
+    images.check_scan(report, identity, 0)
+    expected = "without vulnerability evidence" if status == 42 else "Scanner error"
+    with pytest.raises(ValueError, match=expected):
+        images.check_scan(report, identity, status)
 
 
 @pytest.mark.parametrize("severity", ["HIGH", "CRITICAL"])

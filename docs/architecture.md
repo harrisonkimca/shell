@@ -575,11 +575,28 @@ certificate, and for internal hosts clients trust only that CA
 service-to-service traffic itself, such as a service mesh, can take its
 place (`SHELL_INTERNAL_TLS=platform`).
 
-**CI/CD (GitHub Actions):** lint, types, imports, tests on fakes and the integration suite → OpenAPI and catalogue checks → image build and scans. Every effective image must pass both independent scanner gates before use. High, critical or unrated findings with available or unresolved fixes, scanner errors and failed database updates fail CI. Databases must be fresh and obtained each CI run. Standard SBOMs record actual installed components and versions against each image identity; dependency and image sources are checked against trusted repositories (NFR-024).
+**CI/CD (GitHub Actions):** lint, types, imports, tests on fakes and the 
+integration suite → OpenAPI and catalogue checks → image build and scans. 
+Every effective image must pass both independent scanner gates before use. 
+High, critical or unrated findings with available or unresolved fixes, 
+scanner errors and failed database updates fail CI. Databases must be fresh 
+and obtained each CI run. Standard SBOMs record actual installed components 
+and versions against each image identity; dependency and image sources are 
+checked against trusted repositories (NFR-024).
 
-Prefer clean, digest-pinned upstream images. Security preparation requires prior owner approval recorded in the stage issue, with rejected upstream images confined to isolated preparation and verification. Remediation preserves trusted sources, integrity and compatibility. Local preparation requires no scans or SBOMs; deployment uses scanned and inventoried artifacts.
+Prefer clean, digest-pinned upstream images. Security preparation requires 
+prior owner approval recorded in the stage issue, with rejected upstream 
+images confined to isolated preparation and verification. Remediation preserves 
+trusted sources, integrity and compatibility. Local preparation requires no 
+scans or SBOMs; deployment uses scanned and inventoried artifacts.
 
-Checks join CI as their subjects are built and run on every push and pull request. The deployment job runs migrations (expand, then contract), provider migrations, ES256 key setup, internal certificates, client registry and rolling restart.
+Checks join CI as their subjects are built and run on every push and pull request. 
+The deployment job runs migrations (expand, then contract), provider migrations, 
+ES256 key setup, internal certificates, client registry and rolling restart.
+
+Startup and readiness require the schema needed by the running application version, 
+not exact Alembic-head equality. Migration CI verifies the expected head and that 
+expand migrations preserve compatibility with the previous running version.
 
 **Integration suite.** The existing suite runs against real production-mode
 Ory, the edge and browser engines on every push and PR. Each stage adds

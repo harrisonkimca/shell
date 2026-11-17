@@ -375,3 +375,15 @@ def test_pipeline_stops_on_either_scanner_rejection(
     evidence = json.loads((configured / "reports/images/identities.json").read_text())
     assert not evidence["builds"]
     assert not any(e.startswith("build:") for e in evidence["events"])
+
+
+@pytest.mark.req("NFR-024", kind="configuration check", part="trusted-sources")
+def test_go_identity_accepts_standard_replacement_output() -> None:
+    info = (
+        "/binary: go1.27.4\n\tpath\tcaddy\n\tmod\tcaddy\t(devel)\n"
+        "\tdep\tgithub.com/caddyserver/caddy/v2\tv2.11.9\th1:checksum\n"
+        "\tdep\tgolang.org/x/net\tv0.60.0\n"
+        "\t=>\tgolang.org/x/net\tv0.62.0\th1:checksum\n\n"
+        "\tbuild\tGOARCH=amd64\n"
+    )
+    images.check_go_identity(info, "caddy")

@@ -853,7 +853,7 @@ GO_ROOTS = {
 
 
 def check_go_identity(info: str, family: str) -> None:
-    lines = [line.split() for line in info.splitlines()]
+    lines = [line.split() for line in info.splitlines() if line.strip()]
     path, module, version = GO_ROOTS[family]
     if (
         not lines

@@ -11,3 +11,6 @@ RUN sha256sum go.mod go.sum > /tmp/locks.sha256 \
 FROM ${POSTGRES_IMAGE}
 COPY --from=build /out/gosu /usr/local/bin/gosu
 RUN gosu nobody true
+RUN printf '%s\n' https://dl-cdn.alpinelinux.org/alpine/v3.24/main https://dl-cdn.alpinelinux.org/alpine/v3.24/community > /etc/apk/repositories \
+ && apk upgrade --no-cache
+ENV GOSU_VERSION=1.20

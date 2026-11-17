@@ -1,15 +1,24 @@
 """Single CI Buildx/Trivy path; local development does not invoke this command."""
 
+import hashlib
+import io
 import json
 import os
+import platform
 import re
+import shlex
 import subprocess
 import sys
+import tarfile
+import tempfile
 import tomllib
+import urllib.request
 import uuid
 from pathlib import Path
 from string import Template
 from typing import Any
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORM = "linux/amd64"
@@ -25,8 +34,187 @@ FIXTURE = (
 DIGEST = r"sha256:[0-9a-f]{64}"
 
 
+TRIVY_POLICY = {
+    "scan": {"scanners": ["vuln"], "list-all-pkgs": True},
+    "severity": ["HIGH", "CRITICAL"],
+    "vulnerability": {"ignore-unfixed": True},
+    "exit-code": 42,
+    "timeout": "10m",
+}
+GRYPE_POLICY = {
+    "check-for-app-update": False,
+    "db": {
+        "auto-update": True,
+        "require-update-check": True,
+        "validate-age": True,
+        "validate-by-hash-on-start": True,
+        "max-update-check-frequency": "0s",
+    },
+}
+TOOL_PINS = {
+    "grype": {
+        "linux-amd64": (
+            "grype_0.122.0_linux_amd64.tar.gz",
+            "e697e6f7224637df87e267e4318cc027feae99a8e1b80280241d32b9ee5d4920",
+        ),
+        "darwin-arm64": (
+            "grype_0.122.0_darwin_arm64.tar.gz",
+            "ca8907493c82181b0ceb6fe782ebdcb98b30dcd477319aaad7be89aa7590461b",
+        ),
+    },
+    "buildx": {
+        "linux-amd64": (
+            "buildx-v0.39.0.linux-amd64",
+            "5fb31a097304fbf6dd4038649a0decf32c2b9510e4047acd7d68b9d700c46194",
+        ),
+        "darwin-arm64": (
+            "buildx-v0.39.0.darwin-arm64",
+            "0190e4b9c85510974290f9a597e86c4d8200be782aeaa3df7d756ab4423d6b2d",
+        ),
+    },
+}
+
+
+def check_scanner_policy(root: Path) -> None:
+    for name, expected in (("trivy", TRIVY_POLICY), ("grype", GRYPE_POLICY)):
+        path = root / f"docker/{name}.yaml"
+        if not path.is_file() or yaml.safe_load(path.read_text()) != expected:
+            raise ValueError(f"Unapproved {name} scanner policy")
+
+
+def verified_tool(name: str, root: Path = ROOT) -> Path:
+    arch = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[platform.machine()]
+    asset, checksum = TOOL_PINS[name][sys.platform + "-" + arch]
+    cache = root / ".cache/tools"
+    cache.mkdir(parents=True, exist_ok=True)
+    archive = cache / asset
+    if not archive.exists():
+        repo, version = (
+            ("anchore/grype", "v0.122.0")
+            if name == "grype"
+            else ("docker/buildx", "v0.39.0")
+        )
+        with urllib.request.urlopen(
+            f"https://github.com/{repo}/releases/download/{version}/{asset}"
+        ) as response:
+            data = response.read()
+        if hashlib.sha256(data).hexdigest() != checksum:
+            raise ValueError(f"{name} download integrity failure")
+        archive.write_bytes(data)
+    data = archive.read_bytes()
+    if hashlib.sha256(data).hexdigest() != checksum:
+        raise ValueError(f"{name} cached tool integrity failure")
+    if name == "buildx":
+        archive.chmod(0o755)
+        return archive
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        member = tar.extractfile("grype")
+        if member is None:
+            raise ValueError("Missing Grype executable")
+        binary = member.read()
+    executable = cache / "grype"
+    if executable.exists() and executable.read_bytes() != binary:
+        raise ValueError("Grype cached executable integrity failure")
+    if not executable.exists():
+        executable.write_bytes(binary)
+        executable.chmod(0o755)
+    return executable
+
+
+def grype(root: Path, identity: str, report: Path, sbom: Path, database: Path) -> int:
+    check_scanner_policy(root)
+    # An explicit file defeats cwd/home config discovery. No inherited scanner
+    # setting survives, including the legacy GRYPE_IGNORE_WONTFIX bypass.
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("GRYPE_", "SYFT_"))}
+    env["GRYPE_DB_CACHE_DIR"] = str(database.resolve())
+    for path in (report, sbom):
+        path.unlink(missing_ok=True)
+    return subprocess.run(
+        [
+            str(verified_tool("grype", root)),
+            identity,
+            "--from",
+            "docker",
+            "--platform",
+            PLATFORM,
+            "-c",
+            str((root / "docker/grype.yaml").resolve()),
+            "-o",
+            "json=" + str(report.resolve()),
+            "-o",
+            "cyclonedx-json=" + str(sbom.resolve()),
+        ],
+        cwd=root,
+        env=env,
+        check=False,
+    ).returncode
+
+
+def check_grype(report: dict[str, Any], identity: dict[str, Any], status: int) -> None:
+    if status != 0:
+        raise ValueError(f"Grype scanner error: {status}")
+    target = report.get("source", {}).get("target", {})
+    layers = [layer.get("digest") for layer in target.get("layers", [])]
+    if (
+        report.get("source", {}).get("type") != "image"
+        or target.get("architecture") != identity["Architecture"]
+        or target.get("os") != identity["Os"]
+        or layers != identity["RootFS"]["Layers"]
+        or not layers
+        or not re.fullmatch(DIGEST, target.get("imageID", ""))
+        or not isinstance(report.get("matches"), list)
+    ):
+        raise ValueError("Grype wrong-image association or invalid report")
+    if report.get("ignoredMatches"):
+        raise ValueError("Grype ignored matches are forbidden")
+    findings = [
+        m
+        for m in report["matches"]
+        if m.get("vulnerability", {}).get("severity") in {"High", "Critical"}
+        and m["vulnerability"].get("fix", {}).get("state")
+        not in {"not-fixed", "wont-fix"}
+    ]
+    if findings:
+        raise VulnerableImage(findings)
+
+
+def check_grype_sbom(path: Path, identity: str) -> set[tuple[str, str]]:
+    bom = json.loads(path.read_text())
+    if (
+        bom.get("bomFormat") != "CycloneDX"
+        or bom.get("specVersion") != "1.7"
+        or bom.get("version") != 1
+        or not bom.get("components")
+    ):
+        raise ValueError("Invalid Grype CycloneDX inventory")
+    # This is supplemental to check_grype's scanner-derived layer/architecture
+    # binding; the caller-supplied SBOM name alone never authenticates an image.
+    if bom.get("metadata", {}).get("component", {}).get(
+        "version"
+    ) != identity.removeprefix("sha256:"):
+        raise ValueError("Grype SBOM image association mismatch")
+    packages: set[tuple[str, str]] = set()
+    for component in bom["components"]:
+        if component.get("type") == "file":
+            continue
+        if not component.get("name") or not component.get("version"):
+            raise ValueError("Missing installed package name/version")
+        version = component["version"]
+        if component.get("purl", "").startswith("pkg:golang/"):
+            version = "v" + version.removeprefix("go").removeprefix("v")
+        packages.add((component["name"].lower().replace("_", "-"), version))
+    if not packages:
+        raise ValueError("Empty Grype package inventory")
+    return packages
+
+
 def command(*args: str, root: Path = ROOT) -> str:
-    return subprocess.check_output(args, cwd=root, text=True).strip()
+    effective = (
+        (str(verified_tool("buildx", root)), *args[2:])
+        if args[:2] == ("docker", "buildx")
+        else args
+    )
+    return subprocess.check_output(effective, cwd=root, text=True).strip()
 
 
 def repository(reference: str) -> str:
@@ -52,50 +240,220 @@ RECIPES = {
     "caddy": ("BUILDER_IMAGE", "CADDY_IMAGE"),
     "postgres": ("BUILDER_IMAGE", "POSTGRES_IMAGE"),
     "api": ("PREPARED_IMAGE",),
+    "redis": ("REDIS_IMAGE",),
 }
 LOCAL = {"BUILDER_IMAGE": "local:builder", "PREPARED_IMAGE": "local:python"}
 REMEDIATIONS = {
     "PYTHON_IMAGE": "docker.io/library/python",
     "CADDY_IMAGE": "docker.io/library/caddy",
     "POSTGRES_IMAGE": "docker.io/library/postgres",
+    "REDIS_IMAGE": "docker.io/library/redis",
+    "GO_IMAGE": "docker.io/library/golang",
 }
 
 
+def instructions(path: Path) -> list[tuple[str, list[str]]]:
+    # A deliberately small Dockerfile subset, not a general Dockerfile parser.
+    text = path.read_text()
+    if re.search(r"(?m)^\s*#\s*(?:syntax|escape|check)\s*=", text, re.I):
+        raise ValueError("Unsupported Docker parser directive")
+    text = re.sub(r"\\\r?\n[ \t]*", " ", text)
+    result: list[tuple[str, list[str]]] = []
+    for line in text.splitlines():
+        tokens = shlex.split(line, comments=True)
+        if not tokens:
+            continue
+        op = tokens.pop(0).upper()
+        if op not in {"ARG", "FROM", "ENV", "WORKDIR", "COPY", "RUN", "USER", "CMD"}:
+            raise ValueError("Unsupported Docker instruction")
+        if (
+            any(t.startswith("--mount") or "from=" in t for t in tokens)
+            and op != "COPY"
+        ):
+            raise ValueError("Unsupported source-bearing Docker option")
+        result.append((op, tokens))
+    return result
+
+
+def check_run(tokens: list[str]) -> None:
+    # Only the simple &&-joined commands used by these recipes are supported.
+    # Arbitrary shell interpreters, source installers and alternate Go commands
+    # require an explicit reviewed extension, not another denylist entry.
+    commands: list[list[str]] = [[]]
+    for token in tokens:
+        if token == "&&":
+            commands.append([])
+        else:
+            commands[-1].append(token)
+    for fields in commands:
+        while fields and re.fullmatch(r"[A-Z_]+=[^ ]+", fields[0]):
+            fields = fields[1:]
+        if not fields or fields[0] not in {
+            "uv",
+            "python",
+            "rm",
+            "mkdir",
+            "sha256sum",
+            "cmp",
+            "go",
+            "xcaddy",
+            "printf",
+            "apt-get",
+            "apk",
+            "gosu",
+            "setcap",
+        }:
+            raise ValueError("Unsupported RUN command")
+        if fields[0] == "go":
+            if fields[1:] not in (
+                ["mod", "download"],
+                ["mod", "download", "all"],
+                ["mod", "verify"],
+                ["clean", "-modcache"],
+                [
+                    "version",
+                    "-m",
+                    "/usr/local/bin/xcaddy",
+                    ">",
+                    "/usr/share/shell-build/xcaddy.txt",
+                ],
+            ):
+                if fields[1:3] != ["build", "-mod=readonly"] or any(
+                    arg.startswith(("-modfile", "-overlay", "-toolexec", "-compiler"))
+                    for arg in fields
+                ):
+                    raise ValueError("Unsupported Go build/download form")
+        if fields[0] == "uv" and fields != [
+            "uv",
+            "sync",
+            "--python",
+            "/usr/local/bin/python",
+            "--locked",
+            "--no-dev",
+            "--no-cache",
+            "--index-url",
+            "https://pypi.org/simple",
+        ]:
+            raise ValueError("Unsupported Python dependency source")
+        if fields[0] == "apk" and fields != ["apk", "upgrade", "--no-cache"]:
+            raise ValueError("Unsupported or unauthenticated Alpine update")
+        if fields[0] == "apt-get" and fields[1:] not in (
+            ["update", "--error-on=any"],
+            ["upgrade", "-y", "--no-install-recommends"],
+        ):
+            raise ValueError("Unsupported Debian update")
+        if fields[0] == "xcaddy" and fields != [
+            "xcaddy",
+            "build",
+            "v2.11.9",
+            "--replace",
+            "golang.org/x/net=golang.org/x/net@v0.62.0",
+            "--replace",
+            "github.com/klauspost/compress=github.com/klauspost/compress@v1.20.2",
+            "--output",
+            "/out/caddy",
+        ]:
+            raise ValueError("Unapproved xcaddy source arguments")
+
+
 def build_inputs(root: Path, arguments: dict[str, str]) -> list[str]:
-    paths = sorted((root / "docker").glob("**/Dockerfile"))
+    # Discover actual build files, including alternate Dockerfile spellings.
+    paths = sorted(
+        p
+        for p in root.rglob("*Dockerfile*")
+        if not any(
+            part.startswith(".") or part in {"reports", "__pycache__"}
+            for part in p.relative_to(root).parts
+        )
+    )
     expected = sorted(root / f"docker/{name}/Dockerfile" for name in RECIPES)
-    if paths != expected:
-        raise ValueError("Every Dockerfile needs an enforced build/scan path")
+    if paths != expected or any(
+        (root / n).exists()
+        for n in (
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+        )
+    ):
+        raise ValueError("Every build configuration needs an enforced build/scan path")
     external: list[str] = []
+    controls = {
+        "GOTOOLCHAIN": "local",
+        "GOPROXY": "https://proxy.golang.org",
+        "GOSUMDB": "sum.golang.org",
+        "CGO_ENABLED": "0",
+    }
     for name, keys in RECIPES.items():
         bindings = {key: LOCAL[key] if key in LOCAL else arguments[key] for key in keys}
         stages: set[str] = set()
         inputs: list[str] = []
-        for line in (root / f"docker/{name}/Dockerfile").read_text().splitlines():
-            tokens = line.split()
-            if not tokens or tokens[0].startswith("#"):
-                continue
-            tokens[0] = tokens[0].upper()
-            if tokens[0] == "ARG" and tokens[1] not in {*keys, "TARGETARCH"}:
+        environment: dict[str, str] = {}
+        for op, tokens in instructions(root / f"docker/{name}/Dockerfile"):
+            if not tokens:
+                raise ValueError("Empty Docker instruction")
+            if op == "ARG" and (
+                len(tokens) != 1 or tokens[0] not in {*keys, "TARGETARCH"}
+            ):
                 raise ValueError("Unknown or overridden build argument")
-            if tokens[0] == "FROM":
+            if op == "FROM":
+                if len(tokens) not in {1, 3} or (
+                    len(tokens) == 3 and tokens[1].upper() != "AS"
+                ):
+                    raise ValueError("Unsupported FROM form")
                 try:
-                    reference = Template(tokens[1]).substitute(bindings)
-                except KeyError as error:
+                    reference = Template(tokens[0]).substitute(bindings)
+                except (KeyError, ValueError) as error:
                     raise ValueError("Missing effective build argument") from error
                 if reference not in stages:
                     inputs.append(reference)
-                if len(tokens) == 4 and tokens[2].upper() == "AS":
-                    stages.add(tokens[3])
-            if tokens[0] == "COPY":
-                for token in tokens[1:]:
+                if len(tokens) == 3:
+                    stages.add(tokens[2])
+            if op == "COPY":
+                for token in tokens:
+                    if token.startswith("--") and not (
+                        token.startswith("--from=") or token.startswith("--chown=")
+                    ):
+                        raise ValueError("Unsupported COPY option")
                     if token.startswith("--from=") and token[7:] not in stages:
                         raise ValueError("Unresolved external COPY input")
+                    if "://" in token:
+                        raise ValueError("Unsupported remote COPY source")
+            if op == "RUN":
+                check_run(tokens)
+            if op in {"ENV", "RUN"}:
+                if op == "ENV" and any("=" not in t for t in tokens):
+                    raise ValueError("Only assignment ENV syntax is supported")
+                for token in tokens:
+                    if "=" not in token:
+                        continue
+                    key, value = token.split("=", 1)
+                    if (
+                        key.startswith("GO") and key != "GOSU_VERSION"
+                    ) or key == "CGO_ENABLED":
+                        allowed = controls.get(key)
+                        if key in {"GOOS", "GOARCH"} and op == "RUN":
+                            allowed = "linux" if key == "GOOS" else "${TARGETARCH}"
+                        if key == "GOPROXY" and op == "RUN" and value == "off":
+                            allowed = "off"
+                        if value != allowed:
+                            raise ValueError("Uncontrolled Go downloads or toolchain")
+                    if op == "ENV":
+                        environment[key] = value
+                if op == "RUN" and (
+                    tokens[0].startswith("--")
+                    or any(
+                        t in {"curl", "wget", "git", "ADD", "ONBUILD"} for t in tokens
+                    )
+                    or "go env" in " ".join(tokens)
+                    or "<<" in " ".join(tokens)
+                ):
+                    raise ValueError("Unsupported source-bearing RUN form")
+        if name == "go" and any(environment.get(k) != v for k, v in controls.items()):
+            raise ValueError("Uncontrolled Go downloads")
         if inputs != [bindings[key] for key in keys]:
             raise ValueError("Unapproved Dockerfile input or remediation boundary")
-        external.extend(
-            reference for reference in inputs if reference not in LOCAL.values()
-        )
+        external.extend(r for r in inputs if r not in LOCAL.values())
     return external
 
 
@@ -103,41 +461,88 @@ def check_source_files(root: Path, trusted: dict[str, Any]) -> None:
     for name in ("go", "caddy", "postgres"):
         module = (root / f"docker/{name}/go.mod").read_text()
         sums = (root / f"docker/{name}/go.sum").read_text().splitlines()
-        if "go 1.27.3" not in module or "toolchain " in module:
+        direct = {
+            "go": ("github.com/caddyserver/xcaddy", "v0.4.7"),
+            "caddy": ("github.com/caddyserver/caddy/v2", "v2.11.9"),
+            "postgres": (
+                "github.com/tianon/gosu",
+                "v0.0.0-20261025094355-29b939aa5bd4",
+            ),
+        }[name]
+        if not re.search(
+            r"(?m)^\s*(?:require\s+)?"
+            + re.escape(direct[0])
+            + r"\s+"
+            + re.escape(direct[1])
+            + r"(?:\s|$)",
+            module,
+        ):
+            raise ValueError("Unapproved direct Go source identity")
+        if re.findall(r"(?m)^\s*go\s+(\S+)\s*$", module) != ["1.27.3"] or re.search(
+            r"(?m)^\s*toolchain\b", module
+        ):
             raise ValueError("Unapproved Go toolchain")
         for line in sums:
             fields = line.split()
             if (
                 len(fields) != 3
-                or fields[0] not in trusted["go-module-repositories"]
                 or not re.fullmatch(r"v[^ ]+", fields[1])
                 or not re.fullmatch(r"h1:[A-Za-z0-9+/]{43}=", fields[2])
             ):
                 raise ValueError("Unapproved or unhashed Go source")
         for path, version in re.findall(
-            r"(?m)^\s*(?:require )?([\w./-]+) (v[^\s]+)", module
+            r"(?m)^\s*(?:require\s+)?([\w./-]+)\s+(v[^\s]+)", module
         ):
-            if name == "caddy" and path == "golang.org/x/net":
-                version = "v0.62.0"
+            if name == "caddy" and path in {
+                "golang.org/x/net",
+                "github.com/klauspost/compress",
+            }:
+                version = {
+                    "golang.org/x/net": "v0.62.0",
+                    "github.com/klauspost/compress": "v1.20.2",
+                }[path]
             if not any(line.startswith(f"{path} {version} h1:") for line in sums):
                 raise ValueError("Go dependency missing locked checksum")
         replacements = [
-            line for line in module.splitlines() if line.startswith("replace ")
+            " ".join(line.split())
+            for line in module.splitlines()
+            if re.match(r"^\s*replace\b", line)
         ]
         allowed = (
-            ["replace golang.org/x/net => golang.org/x/net v0.62.0"]
+            [
+                "replace golang.org/x/net => golang.org/x/net v0.62.0",
+                "replace github.com/klauspost/compress => "
+                "github.com/klauspost/compress v1.20.2",
+            ]
             if name == "caddy"
             else []
         )
-        if replacements != allowed:
+        if sorted(replacements) != sorted(allowed):
             raise ValueError("Unapproved Go source replacement")
-    go_recipe = (root / "docker/go/Dockerfile").read_text()
-    if (
-        "GOTOOLCHAIN=local" not in go_recipe
-        or f"GOPROXY={trusted['go']['proxy']}" not in go_recipe
-        or f"GOSUMDB={trusted['go']['sumdb']}" not in go_recipe
-    ):
-        raise ValueError("Uncontrolled Go downloads")
+    if trusted["go"] != {
+        "proxy": "https://proxy.golang.org",
+        "sumdb": "sum.golang.org",
+    }:
+        raise ValueError("Unapproved Go proxy policy")
+    for name in ("go", "caddy", "postgres"):
+        recipe = (root / f"docker/{name}/Dockerfile").read_text()
+        if (
+            "go mod verify" not in recipe
+            or "sha256sum -c /tmp/locks.sha256" not in recipe
+        ):
+            raise ValueError("Missing Go lock verification")
+        if name != "caddy" and "go build -mod=readonly" not in recipe:
+            raise ValueError("Go build must be readonly")
+    for name in ("go", "caddy", "postgres", "redis"):
+        recipe = (root / f"docker/{name}/Dockerfile").read_text()
+        if "apk upgrade --no-cache" not in recipe:
+            raise ValueError("Missing approved Alpine preparation")
+        urls = re.findall(r"https?://[^\s'\\]+", recipe)
+        if any(
+            url not in [*trusted["alpine"]["repositories"], trusted["go"]["proxy"]]
+            for url in urls
+        ):
+            raise ValueError("Unapproved Alpine repository")
     source = (root / "docker/python/debian.sources").read_text()
     for block in source.strip().split("\n\n"):
         fields = dict(line.split(": ", 1) for line in block.splitlines())
@@ -153,6 +558,7 @@ def check_source_files(root: Path, trusted: dict[str, Any]) -> None:
 
 
 def check_configuration(root: Path) -> dict[str, str]:
+    check_scanner_policy(root)
     trusted = tomllib.loads((root / "config/trusted-sources.toml").read_text())
     pins: dict[str, str] = {}
     for line in (root / "docker/images.env").read_text().splitlines():
@@ -210,7 +616,8 @@ def check_configuration(root: Path) -> dict[str, str]:
     return pins
 
 
-def platform_digest(index: dict[str, Any]) -> str:
+def platform_digest(index: dict[str, Any], architecture: str = "amd64") -> str:
+    requested = architecture
     selected: dict[str, str] = {}
     for architecture in ("amd64", "arm64"):
         manifests = [
@@ -226,7 +633,7 @@ def platform_digest(index: dict[str, Any]) -> str:
                 f"Index must contain exactly one linux/{architecture} manifest"
             )
         selected[architecture] = manifests[0]["digest"]
-    return selected["amd64"]
+    return selected[requested]
 
 
 class VulnerableImage(ValueError):
@@ -280,6 +687,11 @@ def require_effective(root: Path, item: dict[str, Any]) -> None:
         json.loads((root / item["scan"]).read_text()),
         item["image_id"],
         item["scanner_status"],
+    )
+    check_grype(
+        json.loads((root / item["grype_scan"]).read_text()),
+        item["docker"],
+        item["grype_status"],
     )
     if local_identity(item["reference"])["Id"] != item["image_id"]:
         raise ValueError("Effective input identity changed before dependent use")
@@ -343,23 +755,37 @@ def check_sbom(path: Path, identity: str) -> set[tuple[str, str]]:
     return packages
 
 
+def check_installed(
+    packages: set[tuple[str, str]], actual: dict[str, dict[str, str]]
+) -> None:
+    for group in actual.values():
+        for package, version in group.items():
+            if (package.lower().replace("_", "-"), version) not in packages:
+                raise ValueError(
+                    f"Missing installed Grype component: {package} {version}"
+                )
+
+
 def check_coverage(expected: set[str], actual: dict[str, Any]) -> None:
     if set(actual) != expected:
         raise ValueError("Incomplete image coverage")
 
 
-def local_identity(reference: str) -> dict[str, Any]:
+def local_identity(reference: str, target: str = PLATFORM) -> dict[str, Any]:
     # Callers use a selected child digest or the unique loaded application ref.
     # Inspect then verifies the platform without requiring newer CLI flags.
     result = json.loads(command("docker", "image", "inspect", reference))[0]
-    if result["Os"] + "/" + result["Architecture"] != PLATFORM:
+    if result["Os"] + "/" + result["Architecture"] != target:
         raise ValueError("Wrong image platform")
     return result
 
 
-def scanner(root: Path, *args: str) -> int:
+def scanner(root: Path, *args: str, offline: bool = False) -> int:
+    check_scanner_policy(root)
     cache = root / ".cache/trivy"
     cache.mkdir(parents=True, exist_ok=True)
+    socket = Path("/var/run/docker.sock")
+    socket_group = str(socket.stat().st_gid) if socket.exists() else "0"
     # Use a pinned tool container and its normal DB update semantics. No inherited
     # TRIVY_* variables, ignore files or user configuration enter the container.
     return subprocess.run(
@@ -367,12 +793,19 @@ def scanner(root: Path, *args: str) -> int:
             "docker",
             "run",
             "--rm",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "--group-add",
+            socket_group,
+            *(["--network", "none"] if offline else []),
+            "--env",
+            "TRIVY_CACHE_DIR=/trivy-cache",
             "-v",
             "/var/run/docker.sock:/var/run/docker.sock",
             "-v",
             f"{root}:/work",
             "-v",
-            f"{cache}:/root/.cache/trivy",
+            f"{cache}:/trivy-cache",
             "-w",
             "/work",
             TRIVY,
@@ -444,7 +877,13 @@ def actual_inventory(
 ) -> dict[str, dict[str, str]]:
     identity = item["image_id"]
     if family in {"python", "application"}:
-        return installed_packages(identity)
+        inventory = installed_packages(identity)
+        inventory["principal"] = {
+            "python": command(
+                "docker", "run", "--rm", "--entrypoint", "python", identity, "--version"
+            ).split()[1]
+        }
+        return inventory
     shell = """awk -F: '/^P:/{p=$2} /^V:/{print p "\\t" $2}' /lib/apk/db/installed"""
     os_packages = dict(
         line.split("\t")
@@ -453,36 +892,74 @@ def actual_inventory(
         ).splitlines()
     )
     inventory = {"os": os_packages}
+    if family == "postgres":
+        inventory["principal"] = {
+            "postgresql": command(
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "postgres",
+                identity,
+                "--version",
+            ).split()[-1]
+        }
+    if family == "redis":
+        banner = command(
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "redis-server",
+            identity,
+            "--version",
+        )
+        match = re.search(r"\bv=([0-9.]+)\b", banner)
+        if match is None:
+            raise ValueError("Unknown installed Redis version")
+        inventory["principal"] = {"redis": match[1]}
     binary = {
         "builder": "/usr/local/bin/xcaddy",
         "caddy": "/usr/bin/caddy",
         "postgres": "/usr/local/bin/gosu",
     }.get(family)
     if binary and builder is not None:
-        relative = Path("reports/images") / (family + ".binary")
-        data = subprocess.check_output(
-            ["docker", "run", "--rm", "--entrypoint", "cat", identity, binary], cwd=root
-        )
-        (root / relative).write_bytes(data)
-        info = command(
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{root / relative}:/binary:ro",
-            "--entrypoint",
-            "go",
-            builder["image_id"],
-            "version",
-            "-m",
-            "/binary",
-        )
+        with tempfile.TemporaryDirectory(dir=root) as directory:
+            relative = Path(directory) / "binary"
+            relative.write_bytes(
+                subprocess.check_output(
+                    ["docker", "run", "--rm", "--entrypoint", "cat", identity, binary],
+                    cwd=root,
+                )
+            )
+            info = command(
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{relative}:/binary:ro",
+                "--entrypoint",
+                "go",
+                builder["image_id"],
+                "version",
+                "-m",
+                "/binary",
+            )
+        (root / "reports/images" / (family + ".binary")).unlink(missing_ok=True)
         (root / "reports/images" / (family + ".buildinfo.txt")).write_text(info + "\n")
         inventory["go"] = go_packages(info)
     return inventory
 
 
-def run_pipeline(root: Path) -> dict[str, Any]:
+def run_pipeline(
+    root: Path,
+    *,
+    verify: bool = True,
+    database: Path | None = None,
+    target: str = PLATFORM,
+) -> dict[str, Any]:
+    if target not in {"linux/amd64", "linux/arm64"} or (verify and target != PLATFORM):
+        raise ValueError("Unsupported preparation/scanning platform")
     pins = check_configuration(root)
     output = root / "reports/images"
     output.mkdir(parents=True, exist_ok=True)
@@ -491,9 +968,15 @@ def run_pipeline(root: Path) -> dict[str, Any]:
         "effective": {},
         "builds": {},
         "events": [],
+        "verified": verify,
+        "platform": target,
     }
     namespace = (
         "shell-ci:" + os.environ.get("GITHUB_RUN_ID", "local") + "-" + uuid.uuid4().hex
+    )
+
+    database = database or (
+        Path(tempfile.mkdtemp(prefix="shell-grype-")) if verify else Path()
     )
 
     def save() -> None:
@@ -514,38 +997,42 @@ def run_pipeline(root: Path) -> dict[str, Any]:
         )
         if index.get("digest") != reference.split("@")[1]:
             raise ValueError("Resolved index digest mismatch")
-        child = platform_digest(index)
+        child = platform_digest(index, target.split("/")[1])
         selected = repository(reference) + "@" + child
-        command("docker", "pull", "--platform", PLATFORM, selected, root=root)
+        command("docker", "pull", "--platform", target, selected, root=root)
         return {
             "index_reference": reference,
             "index": index,
             "index_digest": index["digest"],
             "child_digest": child,
-            "platform": PLATFORM,
+            "platform": target,
             "selected": selected,
         }
 
     def scan(name: str, reference: str, upstream: str | None = None) -> dict[str, Any]:
-        identity = local_identity(reference)
+        identity = local_identity(reference, target)
         path = Path("reports/images") / (name + ".scan.json")
         (root / path).unlink(missing_ok=True)
-        status = scanner(
-            root,
-            "image",
-            "--config",
-            "docker/trivy.yaml",
-            "--ignorefile",
-            "/dev/null",
-            "--image-src",
-            "docker",
-            "--platform",
-            PLATFORM,
-            "--format",
-            "json",
-            "--output",
-            str(path),
-            identity["Id"],
+        status = (
+            scanner(
+                root,
+                "image",
+                "--config",
+                "docker/trivy.yaml",
+                "--ignorefile",
+                "/dev/null",
+                "--image-src",
+                "docker",
+                "--platform",
+                PLATFORM,
+                "--format",
+                "json",
+                "--output",
+                str(path),
+                identity["Id"],
+            )
+            if verify
+            else 0
         )
         item = {
             "reference": reference,
@@ -556,14 +1043,34 @@ def run_pipeline(root: Path) -> dict[str, Any]:
         }
         evidence[name] = item
         save()
+        if not verify:
+            return item
+        grype_path = output / (name + ".grype.json")
+        bom = output / (name + ".cdx.json")
+        grype_status = grype(root, identity["Id"], grype_path, bom, database)
+        item.update(
+            grype_scan=str(grype_path.relative_to(root)),
+            grype_status=grype_status,
+            sbom=str(bom.relative_to(root)),
+        )
+        save()
         if status not in {0, 42}:
             raise ValueError(f"Scanner failed: {name}: {status}")
         report = json.loads((root / path).read_text())
+        if grype_status != 0:
+            raise ValueError(f"Grype scanner error: {grype_status}")
+        grype_accepted = True
+        try:
+            check_grype(json.loads(grype_path.read_text()), identity, grype_status)
+        except VulnerableImage:
+            grype_accepted = False
+            if upstream not in REMEDIATIONS and name != "fixture":
+                raise
         if upstream:
             check_upstream(upstream, report, identity["Id"], status)
         else:
             check_scan(report, identity["Id"], status)
-        if status == 0:
+        if status == 0 and grype_accepted:
             evidence["events"].append("pass:" + name)
         save()
         return item
@@ -574,7 +1081,9 @@ def run_pipeline(root: Path) -> dict[str, Any]:
         family: str,
         builder: dict[str, Any] | None = None,
     ) -> None:
-        bom = Path("reports/images") / (name + ".cdx.json")
+        if not verify:
+            return
+        bom = Path("reports/images") / (name + ".trivy.cdx.json")
         if scanner(
             root, "convert", "--format", "cyclonedx", "--output", str(bom), item["scan"]
         ):
@@ -590,13 +1099,17 @@ def run_pipeline(root: Path) -> dict[str, Any]:
                 if pair not in packages:
                     raise ValueError(f"Incomplete SBOM: {pair}")
         actual = actual_inventory(root, item, family, builder)
-        for group in actual.values():
+        for key, group in actual.items():
+            if key == "principal":
+                continue
             for package, version in group.items():
                 if (package.lower().replace("_", "-"), version) not in packages:
                     raise ValueError(
                         f"Missing installed component: {package} {version}"
                     )
-        item["sbom"] = str(bom)
+        item["trivy_sbom"] = str(bom)
+        grype_packages = check_grype_sbom(root / item["sbom"], item["image_id"])
+        check_installed(grype_packages, actual)
         item["installed"] = actual
         save()
 
@@ -607,7 +1120,8 @@ def run_pipeline(root: Path) -> dict[str, Any]:
         dependencies: list[dict[str, Any]],
     ) -> dict[str, Any]:
         for dependency in dependencies:
-            require_effective(root, dependency)
+            if verify:
+                require_effective(root, dependency)
         evidence["events"].append("build:" + name)
         save()
         reference = namespace + "-" + name
@@ -620,11 +1134,10 @@ def run_pipeline(root: Path) -> dict[str, Any]:
         with (output / (name + ".build.log")).open("w") as log:
             subprocess.run(
                 [
-                    "docker",
-                    "buildx",
+                    str(verified_tool("buildx", root)),
                     "build",
                     "--platform",
-                    PLATFORM,
+                    target,
                     "--load",
                     "--no-cache",
                     "--provenance=false",
@@ -645,7 +1158,7 @@ def run_pipeline(root: Path) -> dict[str, Any]:
                 check=True,
             )
         result = json.loads(metadata.read_text())
-        identity = local_identity(reference)
+        identity = local_identity(reference, target)
         check_build_identity(result, identity["Id"])
         check_build_identity(result, (output / (name + ".id")).read_text().strip())
         evidence["builds"][name] = {
@@ -657,17 +1170,18 @@ def run_pipeline(root: Path) -> dict[str, Any]:
         save()
         return scan(name, reference)
 
-    fixture = resolve(FIXTURE)
-    try:
-        scan("fixture", fixture["selected"])
-    except VulnerableImage as error:
-        if not {"HIGH", "CRITICAL"} <= {v["Severity"] for v in error.findings}:
-            raise ValueError(
-                "Fixture must demonstrate both HIGH and CRITICAL"
-            ) from error
-    else:
-        raise ValueError("Vulnerable fixture unexpectedly passed")
-    evidence["fixture"].update(fixture)
+    fixture = resolve(FIXTURE) if verify else {}
+    if verify:
+        try:
+            scan("fixture", fixture["selected"])
+        except VulnerableImage as error:
+            if not {"HIGH", "CRITICAL"} <= {v["Severity"] for v in error.findings}:
+                raise ValueError(
+                    "Fixture must demonstrate both HIGH and CRITICAL"
+                ) from error
+        else:
+            raise ValueError("Vulnerable fixture unexpectedly passed")
+        evidence["fixture"].update(fixture)
     for name, reference in pins.items():
         resolution = resolve(reference)
         item = scan(name, resolution["selected"], name)
@@ -678,17 +1192,11 @@ def run_pipeline(root: Path) -> dict[str, Any]:
         save()
     check_coverage(set(pins), evidence["inputs"])
     inputs = evidence["inputs"]
-    for name in ("UV_IMAGE", "GO_IMAGE", "REDIS_IMAGE", "MAILPIT_IMAGE"):
-        check_scan(
-            json.loads((root / inputs[name]["scan"]).read_text()),
-            inputs[name]["image_id"],
-            inputs[name]["scanner_status"],
-        )
     builder = build(
         "builder",
         "go",
         {"GO_IMAGE": inputs["GO_IMAGE"]["selected"]},
-        [inputs["GO_IMAGE"]],
+        [],
     )
     inventory("builder", builder, "builder", builder)
     evidence["effective"]["builder"] = builder
@@ -704,7 +1212,11 @@ def run_pipeline(root: Path) -> dict[str, Any]:
     inventory("python", python, "python")
     evidence["effective"]["python"] = python
     for name, recipe in (("CADDY_IMAGE", "caddy"), ("POSTGRES_IMAGE", "postgres")):
-        if inputs[name]["scanner_status"] == 0:
+        if (
+            verify
+            and inputs[name]["scanner_status"] == 0
+            and grype_passes(root, inputs[name])
+        ):
             item = inputs[name]
         else:
             item = build(
@@ -713,7 +1225,6 @@ def run_pipeline(root: Path) -> dict[str, Any]:
                 {
                     "BUILDER_IMAGE": builder["reference"],
                     name: inputs[name]["selected"],
-                    "TARGETARCH": "amd64",
                 },
                 [builder],
             )
@@ -721,13 +1232,18 @@ def run_pipeline(root: Path) -> dict[str, Any]:
         evidence["effective"][recipe] = item
     for name in ("REDIS_IMAGE", "MAILPIT_IMAGE"):
         item = inputs[name]
-        inventory(name, item, "service")
+        if name == "REDIS_IMAGE" and (
+            not verify or item["scanner_status"] != 0 or not grype_passes(root, item)
+        ):
+            item = build("redis", "redis", {name: item["selected"]}, [])
+        inventory(name, item, "redis" if name == "REDIS_IMAGE" else "service")
         evidence["effective"][name] = item
     application = build(
         "application", "api", {"PREPARED_IMAGE": python["reference"]}, [python]
     )
     inventory("application", application, "application")
     evidence["application"] = application
+    evidence["effective"]["application"] = application
     # Verify the loaded prepared image's layers are the application's actual base.
     if (
         application["docker"]["RootFS"]["Layers"][
@@ -737,7 +1253,71 @@ def run_pipeline(root: Path) -> dict[str, Any]:
     ):
         raise ValueError("Application did not use the scanned prepared base")
     save()
+    if verify:
+        check_effective_coverage(root, evidence)
     return evidence
+
+
+def grype_passes(root: Path, item: dict[str, Any]) -> bool:
+    try:
+        check_grype(
+            json.loads((root / item["grype_scan"]).read_text()),
+            item["docker"],
+            item["grype_status"],
+        )
+    except VulnerableImage:
+        return False
+    return True
+
+
+def expected_effective(root: Path = ROOT) -> set[str]:
+    pins = check_configuration(root)
+    consumed = {k for keys in RECIPES.values() for k in keys}
+    return {
+        "builder"
+        if name == "go"
+        else "application"
+        if name == "api"
+        else "REDIS_IMAGE"
+        if name == "redis"
+        else name
+        for name in RECIPES
+    } | (pins.keys() - consumed)
+
+
+def check_effective_coverage(root: Path, evidence: dict[str, Any]) -> None:
+    check_coverage(expected_effective(root), evidence["effective"])
+    for item in evidence["effective"].values():
+        require_effective(root, item)
+        check_grype_sbom(root / item["sbom"], item["image_id"])
+        check_sbom(root / item["trivy_sbom"], item["image_id"])
+        if not item.get("installed"):
+            raise ValueError("Incomplete installed image coverage")
+
+
+def prepared_images(root: Path = ROOT, *, target: str = PLATFORM) -> dict[str, Any]:
+    """Slice 5 interface: prepare locally without scanners; return exact IDs.
+
+    CI instead passes run_pipeline's verified evidence into prepared_references,
+    then uses those loaded images without building or pulling replacements.
+    """
+    return run_pipeline(root, verify=False, target=target)
+
+
+def prepared_references(
+    root: Path, evidence: dict[str, Any], *, scanned: bool
+) -> dict[str, str]:
+    if scanned:
+        if evidence.get("verified") is not True:
+            raise ValueError("Prepared evidence is not scanned")
+        check_effective_coverage(root, evidence)
+    references: dict[str, str] = {}
+    for role in ("application", "caddy", "postgres", "REDIS_IMAGE", "MAILPIT_IMAGE"):
+        item = evidence["effective"][role]
+        if local_identity(item["reference"])["Id"] != item["image_id"]:
+            raise ValueError("Prepared image identity changed")
+        references[role] = item["image_id"]
+    return references
 
 
 def main() -> None:

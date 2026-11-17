@@ -24,6 +24,7 @@ def configured(tmp_path: Path) -> Path:
         "docker/images.env",
         "docker/api/Dockerfile",
         "docker/trivy.yaml",
+        "docker/grype.yaml",
         "config/trusted-sources.toml",
         "pyproject.toml",
         "uv.lock",
@@ -32,7 +33,7 @@ def configured(tmp_path: Path) -> Path:
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / name, target)
-    for name in ("go", "python", "caddy", "postgres"):
+    for name in ("go", "python", "caddy", "postgres", "redis"):
         shutil.copytree(ROOT / "docker" / name, tmp_path / "docker" / name)
     return tmp_path
 
@@ -54,6 +55,7 @@ def configured(tmp_path: Path) -> Path:
         "lowercase-copy",
     ],
 )
+@pytest.mark.req("NFR-024", kind="configuration check", part="trusted-sources")
 def test_unapproved_or_unpinned_inputs_rejected(
     configured: Path, mutation: str
 ) -> None:
@@ -127,6 +129,7 @@ def test_repository_normalization_is_exact() -> None:
 
 
 @pytest.mark.parametrize("mutation", ["arm64", "amd64", "duplicate", "child-pin"])
+@pytest.mark.req("NFR-026", kind="configuration check", part="image-pins")
 def test_index_requires_both_platforms(mutation: str) -> None:
     manifest: dict[str, Any] = {
         "manifests": [
@@ -154,6 +157,7 @@ def test_index_requires_both_platforms(mutation: str) -> None:
 @pytest.mark.parametrize(
     "mutation", ["missing", "invalid", "wrong-image", "empty", "missing-version"]
 )
+@pytest.mark.req("NFR-024", kind="configuration check", part="inventory-rejection")
 def test_sbom_rejection(tmp_path: Path, mutation: str) -> None:
     identity = "sha256:" + "a" * 64
     bom: dict[str, Any] = {
@@ -188,6 +192,7 @@ def test_sbom_rejection(tmp_path: Path, mutation: str) -> None:
 
 
 @pytest.mark.parametrize("status", [1, 2, 42])
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_scanner_errors_and_unsubstantiated_rejection_fail(status: int) -> None:
     with pytest.raises(ValueError):
         images.check_scan(
@@ -196,6 +201,7 @@ def test_scanner_errors_and_unsubstantiated_rejection_fail(status: int) -> None:
 
 
 @pytest.mark.parametrize("severity", ["HIGH", "CRITICAL"])
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_fixable_findings_are_never_exempted(severity: str) -> None:
     identity = "sha256:" + "a" * 64
     report = {
@@ -217,6 +223,7 @@ def test_fixable_findings_are_never_exempted(severity: str) -> None:
         images.check_scan(report, identity, 42)
 
 
+@pytest.mark.req("NFR-024", kind="configuration check", part="image-sbom")
 def test_missing_image_evidence_fails() -> None:
     with pytest.raises(ValueError, match="coverage"):
         images.check_coverage({"one", "two"}, {"one": {}})
@@ -256,9 +263,8 @@ def test_cyclonedx_17_keeps_versions_and_grouping_nodes(tmp_path: Path) -> None:
         images.check_sbom(path, identity)
 
 
-@pytest.mark.parametrize(
-    "name", ["REDIS_IMAGE", "MAILPIT_IMAGE", "GO_IMAGE", "UNKNOWN_IMAGE"]
-)
+@pytest.mark.parametrize("name", ["MAILPIT_IMAGE", "UNKNOWN_IMAGE"])
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_upstream_rejection_cannot_authorize_unapproved_remediation(name: str) -> None:
     report = {
         "SchemaVersion": 2,
@@ -270,6 +276,7 @@ def test_upstream_rejection_cannot_authorize_unapproved_remediation(name: str) -
 
 
 @pytest.mark.parametrize("name", ["PYTHON_IMAGE", "CADDY_IMAGE", "POSTGRES_IMAGE"])
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_only_approved_upstreams_may_enter_preparation(name: str) -> None:
     identity = "sha256:" + "a" * 64
     report = {

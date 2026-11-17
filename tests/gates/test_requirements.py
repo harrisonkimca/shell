@@ -48,7 +48,25 @@ def test_normative_catalogue_and_deadlines() -> None:
     assert catalogue["AUTH-IDP-012"][0] == 1
     assert "AUTH-ERROR-002" not in catalogue
     # Fixed supplemental assignments approved in issue #1; not a subject inventory.
-    assert {part for part in parts if part[2]} == {
+    added = {
+        (key, "configuration check", name, 0, False)
+        for key, names in {
+            "NFR-024": [
+                "source-rejection",
+                "coverage-rejection",
+                "inventory-rejection",
+            ],
+            "NFR-026": [
+                "scanner-policy-rejection",
+                "principal-python-rejection",
+                "principal-postgres-rejection",
+                "principal-redis-rejection",
+                "database-rejection",
+            ],
+        }.items()
+        for name in names
+    }
+    assert {part for part in parts if part[2]} == added | {
         ("AUTH-ERROR-001", "unit test", "problem-details", 0, False),
         ("NFR-026", "configuration check", "dependency-locks", 0, False),
         ("NFR-026", "configuration check", "image-pins", 0, False),
@@ -68,6 +86,8 @@ def test_normative_catalogue_and_deadlines() -> None:
     }
     assert ("NFR-013", "configuration check", "deployment-isolation", 7, True) in parts
     assert gate.due_parts(parts, 0) == {
+        (key, kind, name) for key, kind, name, _, _ in added
+    } | {
         ("AUTH-ERROR-001", "unit test", "problem-details"),
         ASSOCIATION,
         ("NFR-026", "configuration check", "image-pins"),
@@ -469,6 +489,15 @@ def test_retired_supply_chain_id_is_invalid_without_moving_deadlines() -> None:
     assert "NFR-011" not in catalogue
     assert catalogue["NFR-026"] == (0, {"configuration check"})
     assert {(part[2], part[3], part[4]) for part in parts if part[0] == "NFR-026"} == {
+        (name, 0, False)
+        for name in [
+            "scanner-policy-rejection",
+            "principal-python-rejection",
+            "principal-postgres-rejection",
+            "principal-redis-rejection",
+            "database-rejection",
+        ]
+    } | {
         ("dependency-locks", 0, False),
         ("image-pins", 0, False),
         ("build-scans", 0, False),
@@ -731,3 +760,24 @@ def test_unknown_stage_tag_only_rejected_when_reachable(history: Path) -> None:
     git(history, "tag", "stage-99")
     with pytest.raises(ValueError, match="Unknown completion stage"):
         gate.tag_floor(history, set(range(9)))
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        "source-rejection",
+        "scanner-policy-rejection",
+        "coverage-rejection",
+        "inventory-rejection",
+        "principal-python-rejection",
+        "principal-postgres-rejection",
+        "principal-redis-rejection",
+        "database-rejection",
+    ],
+)
+def test_removing_required_rejection_evidence_fails(part: str) -> None:
+    required = gate.required_now(ROOT)
+    removed = {a for a in required if a[2] == part}
+    assert removed
+    with pytest.raises(ValueError, match="required"):
+        gate.require_now(required - removed, ROOT)

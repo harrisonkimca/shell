@@ -1,0 +1,8 @@
+# Explicit configuration; no ignore, VEX, cataloging or severity overrides.
+check-for-app-update: false
+db:
+  auto-update: true
+  require-update-check: true
+  validate-age: true
+  validate-by-hash-on-start: true
+  max-update-check-frequency: 0s

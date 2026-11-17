@@ -76,6 +76,7 @@ def load_requirements(root: Path) -> tuple[Catalogue, list[Part]]:
             "part",
             "due",
             "owner",
+            "required",
         }:
             raise ValueError("Malformed supplemental part")
         key, kind, name, due = (entry[k] for k in ("id", "kind", "part", "due"))
@@ -88,6 +89,7 @@ def load_requirements(root: Path) -> tuple[Catalogue, list[Part]]:
             or type(due) is not int
             or due not in set(stages.values())
             or due < stages[key]
+            or type(entry.get("required", False)) is not bool
             or type(owner) is not bool
             or (kind in OWNER_KINDS and not owner)
             or (key, kind, name) in names
@@ -116,6 +118,21 @@ def require_due(passed: set[Association], parts: list[Part], stage: int) -> None
     if missing:
         raise ValueError(
             f"Missing automated verification through Stage {stage}: {sorted(missing)}"
+        )
+
+
+def required_now(root: Path) -> set[Association]:
+    metadata = tomllib.loads((root / "tests/requirements.toml").read_text())
+    return {
+        (e["id"], e["kind"], e["part"]) for e in metadata["parts"] if e.get("required")
+    }
+
+
+def require_now(passed: set[Association], root: Path) -> None:
+    missing = required_now(root) - passed
+    if missing:
+        raise ValueError(
+            f"Missing required positive/rejection verification: {sorted(missing)}"
         )
 
 
@@ -379,6 +396,7 @@ def main() -> None:
         collection,
         context,
     )
+    require_now(passed, ROOT)
     require_due(passed, parts, max(floor, selected if selected is not None else -1))
     if event == "workflow_dispatch":
         if git(ROOT, "ls-remote", "origin", "refs/heads/main").split()[0] != actual:

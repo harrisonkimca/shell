@@ -1,8 +1,14 @@
 """Real Buildx/Trivy evidence, including the pinned vulnerable fixture."""
 
+import copy
 import hashlib
+import io
 import json
+import os
+import re
+import shutil
 import subprocess
+import tarfile
 import time
 import uuid
 from collections.abc import Iterator
@@ -58,13 +64,16 @@ def test_inventory_matches_installed_python_and_os_packages(
     supply_chain: dict[str, Any],
 ) -> None:
     application = supply_chain["application"]
-    components = images.check_sbom(ROOT / application["sbom"], application["image_id"])
+    components = images.check_grype_sbom(
+        ROOT / application["sbom"], application["image_id"]
+    )
     installed = images.installed_packages(application["image_id"])
     assert installed["python"] and installed["os"]
     for name, version in [*installed["python"].items(), *installed["os"].items()]:
         assert (name.lower().replace("_", "-"), version) in components, (name, version)
 
 
+@pytest.mark.req("NFR-024", kind="configuration check", part="image-sbom")
 @pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_upstreams_remain_diagnostics_only_and_build_order_is_gated(
     supply_chain: dict[str, Any],
@@ -83,11 +92,21 @@ def test_upstreams_remain_diagnostics_only_and_build_order_is_gated(
         if "build:" + name in events:
             assert events.index("pass:builder") < events.index("build:" + name)
     for name, item in supply_chain["effective"].items():
-        packages = images.check_sbom(ROOT / item["sbom"], item["image_id"])
+        packages = images.check_grype_sbom(ROOT / item["sbom"], item["image_id"])
         for group in item["installed"].values():
             assert {
                 (k.lower().replace("_", "-"), v) for k, v in group.items()
             } <= packages
+
+
+def extracted(identity: str, path: str) -> bytes:
+    container = images.command(
+        "docker", "create", "--platform", images.PLATFORM, identity
+    )
+    try:
+        return subprocess.check_output(["docker", "cp", container + ":" + path, "-"])
+    finally:
+        images.command("docker", "rm", "-v", container)
 
 
 @contextmanager
@@ -160,10 +179,56 @@ def test_services_preserve_modules_entrypoint_and_privilege_behavior(
 ) -> None:
     caddy = supply_chain["effective"]["caddy"]
     original = supply_chain["inputs"]["CADDY_IMAGE"]
-    # Inspect the rejected source only as part of the isolated remediation check.
-    args = ["caddy", "list-modules", "--versions"]
-    expected = images.command("docker", "run", "--rm", original["image_id"], *args)
-    assert images.command("docker", "run", "--rm", caddy["image_id"], *args) == expected
+    # Extract the upstream binary without starting its rejected image. Execute
+    # only that parity probe in the already-scanned effective image.
+    archive = extracted(original["image_id"], "/usr/bin/caddy")
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        member = tar.getmembers()[0]
+        assert (member.uid, member.gid) == (1001, 1001)
+        data = tar.extractfile(member)
+        assert data is not None
+        binary = tmp_path / "upstream-caddy"
+        binary.write_bytes(data.read())
+        binary.chmod(0o755)
+    args = ["list-modules", "--versions"]
+    expected = images.command(
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{binary}:/original-caddy:ro",
+        "--entrypoint",
+        "/original-caddy",
+        caddy["image_id"],
+        *args,
+    )
+    assert (
+        images.command("docker", "run", "--rm", caddy["image_id"], "caddy", *args)
+        == expected
+    )
+    assert (
+        images.command(
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "stat",
+            caddy["image_id"],
+            "-c",
+            "%u:%g",
+            "/usr/bin/caddy",
+        )
+        == "1001:1001"
+    )
+    assert "cap_net_bind_service" in images.command(
+        "docker",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "getcap",
+        caddy["image_id"],
+        "/usr/bin/caddy",
+    )
     assert "http.handlers.rate_limit" not in expected
     with running(caddy["image_id"]) as name:
         assert "Caddy" in wait_command(name, "wget", "-qO-", "http://127.0.0.1/")
@@ -173,11 +238,13 @@ def test_services_preserve_modules_entrypoint_and_privilege_behavior(
     entrypoint = "/usr/local/bin/docker-entrypoint.sh"
 
     def read_entrypoint(identity: str) -> str:
-        return images.command(
-            "docker", "run", "--rm", "--entrypoint", "sha256sum", identity, entrypoint
-        )
+        with tarfile.open(fileobj=io.BytesIO(extracted(identity, entrypoint))) as tar:
+            data = tar.extractfile(tar.getmembers()[0])
+            assert data is not None
+            return hashlib.sha256(data.read()).hexdigest()
 
     assert read_entrypoint(pg["image_id"]) == read_entrypoint(original["image_id"])
+    assert "GOSU_VERSION=1.20" in pg["docker"]["Config"]["Env"]
     for key in ("Entrypoint", "Cmd"):
         assert pg["docker"]["Config"][key] == original["docker"]["Config"][key]
     dropped = images.command(
@@ -275,10 +342,6 @@ def test_services_preserve_modules_entrypoint_and_privilege_behavior(
 def test_real_installers_reject_corrupted_dependency_hashes(
     supply_chain: dict[str, Any], tmp_path: Path, language: str
 ) -> None:
-    import os
-    import re
-    import shutil
-
     if language == "python":
         item = supply_chain["effective"]["python"]
         for name in ("pyproject.toml", "uv.lock", ".python-version"):
@@ -364,3 +427,69 @@ def test_real_scanner_errors_cannot_satisfy_vulnerability_verification(
     assert status not in {0, 42}
     with pytest.raises(ValueError, match="Scanner error"):
         images.check_scan({}, identity, status)
+
+
+@pytest.mark.req("NFR-026", kind="configuration check", part="database-rejection")
+@pytest.mark.parametrize("failure", ["missing", "unusable", "update"])
+def test_real_trivy_missing_database_is_fatal(tmp_path: Path, failure: str) -> None:
+    # Same pinned scanner and policy; skip-update is confined to this negative
+    # fixture so an empty database cannot accidentally become a valid result.
+    for name in ("trivy", "grype"):
+        (tmp_path / "docker").mkdir(exist_ok=True)
+        shutil.copy(ROOT / f"docker/{name}.yaml", tmp_path / f"docker/{name}.yaml")
+    if failure == "unusable":
+        database = tmp_path / ".cache/trivy/db"
+        database.mkdir(parents=True)
+        (database / "trivy.db").write_text("unusable vulnerability database")
+    status = images.scanner(
+        tmp_path,
+        "image",
+        "--config",
+        "docker/trivy.yaml",
+        *(["--skip-db-update"] if failure != "update" else []),
+        "--image-src",
+        "docker",
+        "sha256:" + "f" * 64,
+        offline=True,
+    )
+    assert status not in {0, 42}
+
+
+@pytest.mark.req("NFR-024", kind="configuration check", part="coverage-rejection")
+def test_pipeline_evidence_is_independently_complete(
+    supply_chain: dict[str, Any],
+) -> None:
+
+    broken = copy.deepcopy(supply_chain)
+    broken["effective"].pop("caddy")
+    with pytest.raises(ValueError, match="coverage"):
+        images.check_effective_coverage(ROOT, broken)
+    references = images.prepared_references(ROOT, supply_chain, scanned=True)
+    assert references["caddy"] == supply_chain["effective"]["caddy"]["image_id"]
+    assert references["postgres"] == supply_chain["effective"]["postgres"]["image_id"]
+
+
+@pytest.mark.req("NFR-024", kind="configuration check", part="image-sbom")
+def test_caddy_nonroot_binds_privileged_port(
+    supply_chain: dict[str, Any], tmp_path: Path
+) -> None:
+    config = tmp_path / "Caddyfile"
+    config.write_text(
+        '{\n admin off\n}\nhttp://:80 {\n respond "capability works"\n}\n'
+    )
+    with running(
+        supply_chain["effective"]["caddy"]["image_id"],
+        "--user",
+        "1001:1001",
+        "--cap-drop",
+        "ALL",
+        "--cap-add",
+        "NET_BIND_SERVICE",
+        "--sysctl",
+        "net.ipv4.ip_unprivileged_port_start=1024",
+        "-v",
+        f"{config}:/etc/caddy/Caddyfile:ro",
+    ) as name:
+        assert "capability works" in wait_command(
+            name, "wget", "-qO-", "http://127.0.0.1/"
+        )

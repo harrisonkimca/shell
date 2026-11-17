@@ -1,6 +1,8 @@
 ARG GO_IMAGE
 FROM ${GO_IMAGE}
 ENV GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org CGO_ENABLED=0
+RUN printf '%s\n' https://dl-cdn.alpinelinux.org/alpine/v3.24/main https://dl-cdn.alpinelinux.org/alpine/v3.24/community > /etc/apk/repositories \
+ && apk upgrade --no-cache
 WORKDIR /locks
 COPY docker/go/go.mod docker/go/go.sum ./
 RUN sha256sum go.mod go.sum > /tmp/locks.sha256 \

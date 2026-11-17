@@ -2,6 +2,8 @@ module caddy
 
 go 1.27.3
 
+replace github.com/klauspost/compress => github.com/klauspost/compress v1.20.2
+
 replace golang.org/x/net => golang.org/x/net v0.62.0
 
 require github.com/caddyserver/caddy/v2 v2.11.9

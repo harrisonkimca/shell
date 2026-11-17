@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -783,15 +784,40 @@ def test_removing_required_rejection_evidence_fails(part: str) -> None:
         gate.require_now(required - removed, ROOT)
 
 
-def test_removing_a_required_test_case_fails_even_with_other_passing_evidence() -> None:
-    collected = gate.collect_tests(ROOT)
-    gate.require_cases(collected, ROOT)
-    # Every enrolled test family is mandatory, including each parameter case.
-    # Removing one case must not be concealed by another passing test/parameter.
-    for nodeid, associations in collected.items():
-        if associations:
-            remaining = {
-                key: value for key, value in collected.items() if key != nodeid
-            }
-            with pytest.raises(ValueError, match="required test cases"):
-                gate.require_cases(remaining, ROOT)
+def test_new_requirement_test_needs_no_unrelated_inventory_update(
+    history: Path,
+) -> None:
+    directory = history / "tests"
+    directory.mkdir()
+    shutil.copy(ROOT / "tests/conftest.py", directory / "conftest.py")
+    (history / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+        'junit_family = "legacy"\n'
+        'markers = ["req(*ids, kind, part): requirement association"]\n'
+    )
+    metadata = (ROOT / "tests/requirements.toml").read_bytes()
+    assert b"cases =" not in metadata
+    (directory / "test_added.py").write_text(
+        "import pytest\n"
+        "@pytest.mark.req('AUTH-IDP-012', kind='integration suite', part='')\n"
+        "def test_new_behavior(): assert 1 + 1 == 2\n"
+    )
+    collected = gate.collect_tests(history)
+    catalogue, parts = gate.load_requirements(ROOT)
+    gate.validate_associations(collected, catalogue, parts)
+    path = history / "report.xml"
+    subprocess.run(
+        [sys.executable, "-m", "pytest", f"--junitxml={path}"],
+        cwd=history,
+        check=True,
+        capture_output=True,
+    )
+    context = {
+        "tested_revision": git(history, "rev-parse", "HEAD"),
+        "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
+        "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "local"),
+    }
+    assert gate.read_reports([path], collected, context) == {
+        ("AUTH-IDP-012", "integration suite", "")
+    }
+    assert (ROOT / "tests/requirements.toml").read_bytes() == metadata

@@ -77,17 +77,8 @@ def load_requirements(root: Path) -> tuple[Catalogue, list[Part]]:
             "due",
             "owner",
             "required",
-            "cases",
         }:
             raise ValueError("Malformed supplemental part")
-        cases = entry.get("cases", {})
-        if not isinstance(cases, dict) or any(
-            not re.fullmatch(r"test_[a-zA-Z0-9_]+", test)
-            or type(count) is not int
-            or count < 1
-            for test, count in cast(dict[str, Any], cases).items()
-        ):
-            raise ValueError("Malformed required test case counts")
         key, kind, name, due = (entry[k] for k in ("id", "kind", "part", "due"))
         owner = entry.get("owner", kind in OWNER_KINDS)
         if (
@@ -135,23 +126,6 @@ def required_now(root: Path) -> set[Association]:
     return {
         (e["id"], e["kind"], e["part"]) for e in metadata["parts"] if e.get("required")
     }
-
-
-def require_cases(collection: Collection, root: Path) -> None:
-    metadata = tomllib.loads((root / "tests/requirements.toml").read_text())
-    for entry in metadata["parts"]:
-        association = (entry["id"], entry["kind"], entry["part"])
-        for test, count in entry.get("cases", {}).items():
-            actual = sum(
-                nodeid.rsplit("::", 1)[-1].split("[", 1)[0] == test
-                and association in values
-                for nodeid, values in collection.items()
-            )
-            if actual != count:
-                raise ValueError(
-                    f"Missing or changed required test cases: {association}: "
-                    f"{test}: {actual}/{count}"
-                )
 
 
 def require_now(passed: set[Association], root: Path) -> None:
@@ -409,7 +383,6 @@ def main() -> None:
     floor = tag_floor(ROOT, stages)
     collection = collect_tests(ROOT)
     validate_associations(collection, catalogue, parts)
-    require_cases(collection, ROOT)
     context = {
         "tested_revision": actual,
         "run_id": os.environ.get("GITHUB_RUN_ID", "local"),

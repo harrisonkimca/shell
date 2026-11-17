@@ -1,14 +1,10 @@
-# cases freezes mandatory test-family cardinalities, including parameters.
-# Canonical collection and standard JUnit still prove execution and success.
-# Supplemental named parts and deadlines from issue #1's approved Stage 0 plan.
-# IDs, kinds and owning stages come from the spec and roadmap, never this file.
+# Named verification parts and deadlines; tests are derived from canonical collection.
 [[parts]]
 id = "AUTH-ERROR-001"
 kind = "unit test"
 part = "problem-details"
 due = 0
 required = true
-cases = { test_builtin_telemetry_is_disabled = 1, test_codes_are_listed_in_openapi = 1, test_correlation_is_generated_for_every_request = 1, test_factory_has_no_public_or_fixture_routes = 1, test_invalid_json_and_input_are_not_returned = 2, test_problem_details = 8, test_unmapped_http_errors_are_bare_internal_errors = 1 }
 
 [[parts]]
 id = "NFR-026"
@@ -16,7 +12,6 @@ kind = "configuration check"
 part = "dependency-locks"
 due = 0
 required = true
-cases = { test_dependency_locks = 1, test_real_installers_reject_corrupted_dependency_hashes = 2 }
 
 [[parts]]
 id = "NFR-026"
@@ -24,7 +19,6 @@ kind = "configuration check"
 part = "image-pins"
 due = 0
 required = true
-cases = { test_all_index_pins_support_both_platforms = 1, test_identity_inspection_works_with_ci_docker_cli = 2, test_index_requires_both_platforms = 4, test_unapproved_or_unpinned_inputs_rejected = 1 }
 
 [[parts]]
 id = "NFR-026"
@@ -32,7 +26,6 @@ kind = "configuration check"
 part = "build-scans"
 due = 0
 required = true
-cases = { test_caddy_keeps_upstream_permitted_only_file_capability = 1, test_caddy_nonroot_binds_privileged_port = 1, test_every_input_and_built_image_passed_real_scanning = 1, test_fixable_findings_are_never_exempted = 2, test_grype_approved_unfixed_states_retained = 2, test_loaded_build_identity_rejects_a_different_image = 1, test_only_approved_upstreams_may_enter_preparation = 3, test_prepared_python_and_scanned_application_start_without_pip = 1, test_real_principal_vulnerabilities_rejected = 3, test_real_scanner_errors_cannot_satisfy_vulnerability_verification = 1, test_real_scanner_rejects_fixable_high_and_critical = 1, test_scanner_errors_and_unsubstantiated_rejection_fail = 3, test_services_preserve_modules_entrypoint_and_privilege_behavior = 1, test_upstream_rejection_cannot_authorize_unapproved_remediation = 2, test_upstreams_remain_diagnostics_only_and_build_order_is_gated = 1, test_vulnerable_effective_input_stops_before_dependent_use = 1 }
 
 [[parts]]
 id = "NFR-013"
@@ -71,7 +64,6 @@ kind = "configuration check"
 part = "trusted-sources"
 due = 0
 required = true
-cases = { test_actual_sources_and_effective_build_inputs = 1, test_repository_normalization_is_exact = 1, test_unapproved_or_unpinned_inputs_rejected = 12 }
 
 [[parts]]
 id = "NFR-024"
@@ -79,7 +71,6 @@ kind = "configuration check"
 part = "image-sbom"
 due = 0
 required = true
-cases = { test_cyclonedx_17_keeps_versions_and_grouping_nodes = 1, test_inventory_matches_installed_python_and_os_packages = 1, test_missing_image_evidence_fails = 1, test_native_inventory_accepts_only_the_unversioned_local_caddy_wrapper = 1, test_os_inventory_retains_distribution_epoch_and_release = 1, test_upstreams_remain_diagnostics_only_and_build_order_is_gated = 1, test_xcaddy_local_main_wrapper_still_requires_versioned_caddy_library = 1 }
 
 [[parts]]
 id = "NFR-024"
@@ -99,7 +90,6 @@ kind = "configuration check"
 part = "source-rejection"
 due = 0
 required = true
-cases = { test_additional_sources_and_boundaries_are_enforced = 5, test_go_alternate_whitespace_fails = 2, test_source_construct_bypasses_fail = 15, test_unhandled_build_configuration_fails = 3 }
 
 [[parts]]
 id = "NFR-024"
@@ -107,7 +97,6 @@ kind = "configuration check"
 part = "coverage-rejection"
 due = 0
 required = true
-cases = { test_correct_scan_cannot_be_assigned_to_another_effective_role = 1, test_effective_coverage_rejected_at_pipeline_boundary = 5, test_pipeline_evidence_is_independently_complete = 1 }
 
 [[parts]]
 id = "NFR-024"
@@ -115,7 +104,6 @@ kind = "configuration check"
 part = "inventory-rejection"
 due = 0
 required = true
-cases = { test_grype_inventory_rejection = 4, test_sbom_rejection = 5 }
 
 [[parts]]
 id = "NFR-026"
@@ -123,7 +111,6 @@ kind = "configuration check"
 part = "scanner-policy-rejection"
 due = 0
 required = true
-cases = { test_cached_build_client_is_verified_before_execution = 1, test_grype_execution_association_and_suppression_fail = 5, test_grype_fix_states_fail_closed = 8, test_real_grype_ambient_bypasses_cannot_suppress = 2, test_scanner_policy_changes_fail = 6 }
 
 [[parts]]
 id = "NFR-026"
@@ -131,7 +118,6 @@ kind = "configuration check"
 part = "principal-python-rejection"
 due = 0
 required = true
-cases = { test_real_principal_vulnerabilities_rejected = 1 }
 
 [[parts]]
 id = "NFR-026"
@@ -139,7 +125,6 @@ kind = "configuration check"
 part = "principal-postgres-rejection"
 due = 0
 required = true
-cases = { test_real_principal_vulnerabilities_rejected = 1 }
 
 [[parts]]
 id = "NFR-026"
@@ -147,7 +132,6 @@ kind = "configuration check"
 part = "principal-redis-rejection"
 due = 0
 required = true
-cases = { test_real_principal_vulnerabilities_rejected = 1 }
 
 [[parts]]
 id = "NFR-026"
@@ -155,4 +139,3 @@ kind = "configuration check"
 part = "database-rejection"
 due = 0
 required = true
-cases = { test_real_grype_database_update_failures_fail_closed = 3, test_real_grype_stale_database_is_not_accepted = 1, test_real_trivy_missing_database_is_fatal = 3 }

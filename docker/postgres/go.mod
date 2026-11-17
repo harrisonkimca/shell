@@ -1,6 +1,6 @@
 module shell.local/gosu
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/moby/sys/user v0.4.1 // indirect

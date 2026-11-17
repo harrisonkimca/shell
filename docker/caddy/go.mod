@@ -1,6 +1,6 @@
 module caddy
 
-go 1.27.3
+go 1.27.4
 
 replace github.com/klauspost/compress => github.com/klauspost/compress v1.20.2
 

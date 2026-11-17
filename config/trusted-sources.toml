@@ -19,6 +19,3 @@ sumdb = "sum.golang.org"
 repositories = ["http://deb.debian.org/debian", "http://deb.debian.org/debian-security"]
 suites = ["trixie", "trixie-updates", "trixie-security"]
 signed-by = "/usr/share/keyrings/debian-archive-keyring.pgp"
-
-[alpine]
-repositories = ["https://dl-cdn.alpinelinux.org/alpine/v3.24/main", "https://dl-cdn.alpinelinux.org/alpine/v3.24/community", "https://dl-cdn.alpinelinux.org/alpine/v3.23/main", "https://dl-cdn.alpinelinux.org/alpine/v3.23/community"]

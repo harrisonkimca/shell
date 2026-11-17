@@ -15,6 +15,7 @@ RUN sha256sum go.mod go.sum > /tmp/locks.sha256 \
  && sha256sum -c /tmp/locks.sha256
 FROM ${CADDY_IMAGE}
 COPY --from=build --chown=1001:1001 /out/caddy /usr/bin/caddy
-RUN printf '%s\n' https://dl-cdn.alpinelinux.org/alpine/v3.24/main https://dl-cdn.alpinelinux.org/alpine/v3.24/community > /etc/apk/repositories \
+RUN test "$(cut -d. -f1,2 /etc/alpine-release)" = 3.24 \
+ && printf '%s\n' https://dl-cdn.alpinelinux.org/alpine/v3.24/main https://dl-cdn.alpinelinux.org/alpine/v3.24/community > /etc/apk/repositories \
  && apk upgrade --no-cache
 RUN setcap cap_net_bind_service=+p /usr/bin/caddy

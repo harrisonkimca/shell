@@ -6,7 +6,6 @@ import json
 import os
 import platform
 import re
-import shlex
 import subprocess
 import sys
 import tarfile
@@ -14,8 +13,8 @@ import tempfile
 import tomllib
 import urllib.request
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
-from string import Template
 from typing import Any
 
 import yaml
@@ -75,6 +74,25 @@ TOOL_PINS = {
 }
 
 
+_trivy_database: Path | None = None
+
+
+def trivy_database() -> Path:
+    global _trivy_database
+    if _trivy_database is None:
+        _trivy_database = Path(tempfile.mkdtemp(prefix="shell-trivy-"))
+    return _trivy_database
+
+
+def check_trivy_database(cache: Path) -> dict[str, Any]:
+    metadata = json.loads((cache / "db/metadata.json").read_text())
+    updated = datetime.fromisoformat(metadata["UpdatedAt"].replace("Z", "+00:00"))
+    age = (datetime.now(UTC) - updated).total_seconds()
+    if not 0 <= age <= 48 * 60 * 60:
+        raise ValueError("Trivy database freshness validation failed")
+    return metadata
+
+
 def check_scanner_policy(root: Path) -> None:
     for name, expected in (("trivy", TRIVY_POLICY), ("grype", GRYPE_POLICY)):
         path = root / f"docker/{name}.yaml"
@@ -84,7 +102,10 @@ def check_scanner_policy(root: Path) -> None:
 
 def verified_tool(name: str, root: Path = ROOT) -> Path:
     arch = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[platform.machine()]
-    asset, checksum = TOOL_PINS[name][sys.platform + "-" + arch]
+    key = sys.platform + "-" + arch
+    if key not in TOOL_PINS[name]:
+        raise ValueError(f"Unsupported verified {name} platform: {key}")
+    asset, checksum = TOOL_PINS[name][key]
     cache = root / ".cache/tools"
     cache.mkdir(parents=True, exist_ok=True)
     archive = cache / asset
@@ -170,7 +191,8 @@ def check_grype(report: dict[str, Any], identity: dict[str, Any], status: int) -
     findings = [
         m
         for m in report["matches"]
-        if m.get("vulnerability", {}).get("severity") in {"High", "Critical"}
+        if m.get("vulnerability", {}).get("severity")
+        not in {"Negligible", "Low", "Medium"}
         and m["vulnerability"].get("fix", {}).get("state")
         not in {"not-fixed", "wont-fix"}
     ]
@@ -252,209 +274,195 @@ REMEDIATIONS = {
 }
 
 
-def instructions(path: Path) -> list[tuple[str, list[str]]]:
-    # A deliberately small Dockerfile subset, not a general Dockerfile parser.
-    text = path.read_text()
+# Exact supported recipes. Changes to commands, ENV, COPY inputs or instruction
+# order need a reviewed extension here. This is an allowlist, not a shell parser.
+# Shell bodies are compared verbatim; no quoting, expansion or comments are
+# interpreted by this gate. Only whole-line comments and continuations normalize.
+SUPPORTED_BUILDS = {
+    "go": (
+        "ARG GO_IMAGE",
+        "FROM ${GO_IMAGE}",
+        (
+            "ENV GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org "
+            "GOSUMDB=sum.golang.org CGO_ENABLED=0"
+        ),
+        (
+            'RUN test "$(cut -d. -f1,2 /etc/alpine-release)" = 3.24  && printf '
+            "'%s\\n' https://dl-cdn.alpinelinux.org/alpine/v3.24/main "
+            "https://dl-cdn.alpinelinux.org/alpine/v3.24/community > "
+            "/etc/apk/repositories  && apk upgrade --no-cache"
+        ),
+        "WORKDIR /locks",
+        "COPY docker/go/go.mod docker/go/go.sum ./",
+        (
+            "RUN sha256sum go.mod go.sum > /tmp/locks.sha256  && go mod download"
+            " && go mod verify  && GOPROXY=off go build -mod=readonly -trimpath "
+            "-o /usr/local/bin/xcaddy github.com/caddyserver/xcaddy/cmd/xcaddy  "
+            "&& sha256sum -c /tmp/locks.sha256  && mkdir -p "
+            "/usr/share/shell-build  && go version -m /usr/local/bin/xcaddy > "
+            "/usr/share/shell-build/xcaddy.txt  && go clean -modcache && rm -rf "
+            "/locks /tmp/locks.sha256"
+        ),
+    ),
+    "python": (
+        "ARG PYTHON_IMAGE",
+        "ARG UV_IMAGE",
+        "FROM ${UV_IMAGE} AS uv",
+        "FROM ${PYTHON_IMAGE}",
+        "COPY docker/python/debian.sources /etc/apt/sources.list.d/debian.sources",
+        (
+            "RUN python -c 'from pathlib import Path; assert not "
+            'Path("/etc/apt/sources.list").exists(); assert '
+            'list(Path("/etc/apt/sources.list.d").iterdir()) == '
+            '[Path("/etc/apt/sources.list.d/debian.sources")]\'  && apt-get '
+            "update --error-on=any  && apt-get upgrade -y "
+            "--no-install-recommends  && rm -rf /var/lib/apt/lists/*  && python "
+            "-m pip uninstall --yes pip  && rm -rf "
+            "/usr/local/lib/python3.13/ensurepip  && rm -f /usr/local/bin/pip "
+            "/usr/local/bin/pip3 /usr/local/bin/pip3.13"
+        ),
+        "COPY --from=uv /uv /usr/local/bin/uv",
+        "ENV UV_PYTHON_DOWNLOADS=never",
+    ),
+    "caddy": (
+        "ARG BUILDER_IMAGE",
+        "ARG CADDY_IMAGE",
+        "FROM ${BUILDER_IMAGE} AS build",
+        "ARG TARGETARCH",
+        "WORKDIR /locks",
+        "COPY docker/caddy/go.mod docker/caddy/go.sum ./",
+        (
+            "RUN sha256sum go.mod go.sum > /tmp/locks.sha256  && go mod download"
+            " all && go mod verify  && sha256sum -c /tmp/locks.sha256  && mkdir "
+            "-p /out  && GOPROXY=off GOOS=linux GOARCH=${TARGETARCH} "
+            "XCADDY_SKIP_CLEANUP=1 xcaddy build v2.11.9 --replace "
+            "golang.org/x/net=golang.org/x/net@v0.62.0 --replace "
+            "github.com/klauspost/compress=github.com/klauspost/compress@v1.20.2"
+            " --output /out/caddy  && sort go.mod > /tmp/locked.mod  && sort "
+            "/tmp/buildenv*/go.mod > /tmp/effective.mod  && cmp /tmp/locked.mod "
+            "/tmp/effective.mod  && sha256sum -c /tmp/locks.sha256"
+        ),
+        "FROM ${CADDY_IMAGE}",
+        "COPY --from=build --chown=1001:1001 /out/caddy /usr/bin/caddy",
+        (
+            'RUN test "$(cut -d. -f1,2 /etc/alpine-release)" = 3.24  && printf '
+            "'%s\\n' https://dl-cdn.alpinelinux.org/alpine/v3.24/main "
+            "https://dl-cdn.alpinelinux.org/alpine/v3.24/community > "
+            "/etc/apk/repositories  && apk upgrade --no-cache"
+        ),
+        "RUN setcap cap_net_bind_service=+p /usr/bin/caddy",
+    ),
+    "postgres": (
+        "ARG BUILDER_IMAGE",
+        "ARG POSTGRES_IMAGE",
+        "FROM ${BUILDER_IMAGE} AS build",
+        "ARG TARGETARCH",
+        "WORKDIR /locks",
+        "COPY docker/postgres/go.mod docker/postgres/go.sum ./",
+        (
+            "RUN sha256sum go.mod go.sum > /tmp/locks.sha256  && go mod download"
+            " && go mod verify  && GOPROXY=off GOOS=linux GOARCH=${TARGETARCH} "
+            "go build -mod=readonly -trimpath -ldflags='-s -w' -o /out/gosu "
+            "github.com/tianon/gosu  && sha256sum -c /tmp/locks.sha256"
+        ),
+        "FROM ${POSTGRES_IMAGE}",
+        "COPY --from=build /out/gosu /usr/local/bin/gosu",
+        "RUN gosu nobody true",
+        "ENV GOSU_VERSION=1.20",
+    ),
+    "redis": (
+        "ARG REDIS_IMAGE",
+        "FROM ${REDIS_IMAGE}",
+        (
+            'RUN test "$(cut -d. -f1,2 /etc/alpine-release)" = 3.23  && printf '
+            "'%s\\n' https://dl-cdn.alpinelinux.org/alpine/v3.23/main "
+            "https://dl-cdn.alpinelinux.org/alpine/v3.23/community > "
+            "/etc/apk/repositories  && apk upgrade --no-cache"
+        ),
+    ),
+    "api": (
+        "ARG PREPARED_IMAGE",
+        "FROM ${PREPARED_IMAGE}",
+        "WORKDIR /app",
+        "ENV UV_PYTHON_DOWNLOADS=never UV_COMPILE_BYTECODE=1",
+        "COPY pyproject.toml uv.lock .python-version ./",
+        (
+            "RUN uv sync --python /usr/local/bin/python --locked --no-dev "
+            "--no-cache --index-url https://pypi.org/simple"
+        ),
+        "COPY apps/api/src /app/src",
+        'ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app/src',
+        "USER 65532:65532",
+        'CMD ["python", "-m", "shell_api.main"]',
+    ),
+}
+
+
+def instructions(path: Path) -> tuple[str, ...]:
+    text = path.read_bytes().decode("ascii")
+    if any(ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in text):
+        raise ValueError("Unsupported Docker control character")
     if re.search(r"(?m)^\s*#\s*(?:syntax|escape|check)\s*=", text, re.I):
         raise ValueError("Unsupported Docker parser directive")
-    text = re.sub(r"\\\r?\n[ \t]*", " ", text)
-    result: list[tuple[str, list[str]]] = []
-    for line in text.splitlines():
-        tokens = shlex.split(line, comments=True)
-        if not tokens:
-            continue
-        op = tokens.pop(0).upper()
-        if op not in {"ARG", "FROM", "ENV", "WORKDIR", "COPY", "RUN", "USER", "CMD"}:
-            raise ValueError("Unsupported Docker instruction")
-        if (
-            any(t.startswith("--mount") or "from=" in t for t in tokens)
-            and op != "COPY"
-        ):
-            raise ValueError("Unsupported source-bearing Docker option")
-        result.append((op, tokens))
-    return result
-
-
-def check_run(tokens: list[str]) -> None:
-    # Only the simple &&-joined commands used by these recipes are supported.
-    # Arbitrary shell interpreters, source installers and alternate Go commands
-    # require an explicit reviewed extension, not another denylist entry.
-    commands: list[list[str]] = [[]]
-    for token in tokens:
-        if token == "&&":
-            commands.append([])
-        else:
-            commands[-1].append(token)
-    for fields in commands:
-        while fields and re.fullmatch(r"[A-Z_]+=[^ ]+", fields[0]):
-            fields = fields[1:]
-        if not fields or fields[0] not in {
-            "uv",
-            "python",
-            "rm",
-            "mkdir",
-            "sort",
-            "sha256sum",
-            "cmp",
-            "go",
-            "xcaddy",
-            "printf",
-            "apt-get",
-            "apk",
-            "gosu",
-            "setcap",
-        }:
-            raise ValueError("Unsupported RUN command")
-        if fields[0] == "go":
-            if fields[1:] not in (
-                ["mod", "download"],
-                ["mod", "download", "all"],
-                ["mod", "verify"],
-                ["clean", "-modcache"],
-                [
-                    "version",
-                    "-m",
-                    "/usr/local/bin/xcaddy",
-                    ">",
-                    "/usr/share/shell-build/xcaddy.txt",
-                ],
-            ):
-                if fields[1:3] != ["build", "-mod=readonly"] or any(
-                    arg.startswith(("-modfile", "-overlay", "-toolexec", "-compiler"))
-                    for arg in fields
-                ):
-                    raise ValueError("Unsupported Go build/download form")
-        if fields[0] == "uv" and fields != [
-            "uv",
-            "sync",
-            "--python",
-            "/usr/local/bin/python",
-            "--locked",
-            "--no-dev",
-            "--no-cache",
-            "--index-url",
-            "https://pypi.org/simple",
-        ]:
-            raise ValueError("Unsupported Python dependency source")
-        if fields[0] == "apk" and fields != ["apk", "upgrade", "--no-cache"]:
-            raise ValueError("Unsupported or unauthenticated Alpine update")
-        if fields[0] == "apt-get" and fields[1:] not in (
-            ["update", "--error-on=any"],
-            ["upgrade", "-y", "--no-install-recommends"],
-        ):
-            raise ValueError("Unsupported Debian update")
-        if fields[0] == "xcaddy" and fields != [
-            "xcaddy",
-            "build",
-            "v2.11.9",
-            "--replace",
-            "golang.org/x/net=golang.org/x/net@v0.62.0",
-            "--replace",
-            "github.com/klauspost/compress=github.com/klauspost/compress@v1.20.2",
-            "--output",
-            "/out/caddy",
-        ]:
-            raise ValueError("Unapproved xcaddy source arguments")
+    text = "\n".join(
+        line for line in text.split("\n") if not line.lstrip().startswith("#")
+    )
+    text = re.sub(r"\\[ \t]*\n[ \t]*", " ", text)
+    return tuple(
+        line.strip()
+        for line in text.split("\n")
+        if line.strip() and not line.lstrip().startswith("#")
+    )
 
 
 def build_inputs(root: Path, arguments: dict[str, str]) -> list[str]:
-    # Discover actual build files, including alternate Dockerfile spellings.
     paths = sorted(
         p
-        for p in root.rglob("*Dockerfile*")
+        for p in root.rglob("*")
         if not any(
             part.startswith(".") or part in {"reports", "__pycache__"}
             for part in p.relative_to(root).parts
         )
+        and (
+            "dockerfile" in p.name.lower()
+            or "containerfile" in p.name.lower()
+            or p.name.startswith(("compose.", "docker-compose.", "docker-bake."))
+        )
     )
     expected = sorted(root / f"docker/{name}/Dockerfile" for name in RECIPES)
-    if paths != expected or any(
-        (root / n).exists()
-        for n in (
-            "compose.yaml",
-            "compose.yml",
-            "docker-compose.yaml",
-            "docker-compose.yml",
-        )
-    ):
+    if paths != expected:
         raise ValueError("Every build configuration needs an enforced build/scan path")
     external: list[str] = []
-    controls = {
-        "GOTOOLCHAIN": "local",
-        "GOPROXY": "https://proxy.golang.org",
-        "GOSUMDB": "sum.golang.org",
-        "CGO_ENABLED": "0",
-    }
     for name, keys in RECIPES.items():
-        bindings = {key: LOCAL[key] if key in LOCAL else arguments[key] for key in keys}
-        stages: set[str] = set()
-        inputs: list[str] = []
-        environment: dict[str, str] = {}
-        for op, tokens in instructions(root / f"docker/{name}/Dockerfile"):
-            if not tokens:
-                raise ValueError("Empty Docker instruction")
-            if op == "ARG" and (
-                len(tokens) != 1 or tokens[0] not in {*keys, "TARGETARCH"}
+        recipe = root / f"docker/{name}/Dockerfile"
+        try:
+            actual = instructions(recipe)
+        except UnicodeError as error:
+            raise ValueError("Unsupported non-ASCII Docker input") from error
+        if actual != SUPPORTED_BUILDS[name]:
+            raise ValueError(f"Unapproved build operations or arguments: {name}")
+        # Exact instruction equality binds both COPY operands to these validated
+        # files. Reject symbolic links so Docker cannot copy a different input.
+        for source in (
+            recipe,
+            *(
+                root / f"docker/{name}/{f}"
+                for f in (
+                    ("go.mod", "go.sum")
+                    if name in {"go", "caddy", "postgres"}
+                    else ("debian.sources",)
+                    if name == "python"
+                    else ()
+                )
+            ),
+        ):
+            if any(
+                p.is_symlink()
+                for p in (source, *source.parents)
+                if p == root or root in p.parents
             ):
-                raise ValueError("Unknown or overridden build argument")
-            if op == "FROM":
-                if len(tokens) not in {1, 3} or (
-                    len(tokens) == 3 and tokens[1].upper() != "AS"
-                ):
-                    raise ValueError("Unsupported FROM form")
-                try:
-                    reference = Template(tokens[0]).substitute(bindings)
-                except (KeyError, ValueError) as error:
-                    raise ValueError("Missing effective build argument") from error
-                if reference not in stages:
-                    inputs.append(reference)
-                if len(tokens) == 3:
-                    stages.add(tokens[2])
-            if op == "COPY":
-                for token in tokens:
-                    if token.startswith("--") and not (
-                        token.startswith("--from=") or token.startswith("--chown=")
-                    ):
-                        raise ValueError("Unsupported COPY option")
-                    if token.startswith("--from=") and token[7:] not in stages:
-                        raise ValueError("Unresolved external COPY input")
-                    if "://" in token:
-                        raise ValueError("Unsupported remote COPY source")
-            if op == "RUN":
-                check_run(tokens)
-            if op in {"ENV", "RUN"}:
-                if op == "ENV" and any("=" not in t for t in tokens):
-                    raise ValueError("Only assignment ENV syntax is supported")
-                for token in tokens:
-                    if "=" not in token:
-                        continue
-                    key, value = token.split("=", 1)
-                    if (
-                        key.startswith("GO") and key != "GOSU_VERSION"
-                    ) or key == "CGO_ENABLED":
-                        allowed = controls.get(key)
-                        if key in {"GOOS", "GOARCH"} and op == "RUN":
-                            allowed = "linux" if key == "GOOS" else "${TARGETARCH}"
-                        if key == "GOPROXY" and op == "RUN" and value == "off":
-                            allowed = "off"
-                        if value != allowed:
-                            raise ValueError("Uncontrolled Go downloads or toolchain")
-                    if op == "ENV":
-                        environment[key] = value
-                if op == "RUN" and (
-                    tokens[0].startswith("--")
-                    or any(
-                        t in {"curl", "wget", "git", "ADD", "ONBUILD"} for t in tokens
-                    )
-                    or "go env" in " ".join(tokens)
-                    or "<<" in " ".join(tokens)
-                ):
-                    raise ValueError("Unsupported source-bearing RUN form")
-        if name == "go" and any(environment.get(k) != v for k, v in controls.items()):
-            raise ValueError("Uncontrolled Go downloads")
-        if inputs != [bindings[key] for key in keys]:
-            raise ValueError("Unapproved Dockerfile input or remediation boundary")
-        external.extend(r for r in inputs if r not in LOCAL.values())
+                raise ValueError("Unapproved symbolic build input")
+        external.extend(arguments[key] for key in keys if key not in LOCAL)
     return external
 
 
@@ -463,12 +471,9 @@ def check_source_files(root: Path, trusted: dict[str, Any]) -> None:
         module = (root / f"docker/{name}/go.mod").read_text()
         sums = (root / f"docker/{name}/go.sum").read_text().splitlines()
         direct = {
-            "go": ("github.com/caddyserver/xcaddy", "v0.4.7"),
+            "go": GO_ROOTS["builder"][1:],
             "caddy": ("github.com/caddyserver/caddy/v2", "v2.11.9"),
-            "postgres": (
-                "github.com/tianon/gosu",
-                "v0.0.0-20261025094355-29b939aa5bd4",
-            ),
+            "postgres": GO_ROOTS["postgres"][1:],
         }[name]
         if not re.search(
             r"(?m)^\s*(?:require\s+)?"
@@ -479,7 +484,7 @@ def check_source_files(root: Path, trusted: dict[str, Any]) -> None:
             module,
         ):
             raise ValueError("Unapproved direct Go source identity")
-        if re.findall(r"(?m)^\s*go\s+(\S+)\s*$", module) != ["1.27.3"] or re.search(
+        if re.findall(r"(?m)^\s*go\s+(\S+)\s*$", module) != ["1.27.4"] or re.search(
             r"(?m)^\s*toolchain\b", module
         ):
             raise ValueError("Unapproved Go toolchain")
@@ -525,25 +530,6 @@ def check_source_files(root: Path, trusted: dict[str, Any]) -> None:
         "sumdb": "sum.golang.org",
     }:
         raise ValueError("Unapproved Go proxy policy")
-    for name in ("go", "caddy", "postgres"):
-        recipe = (root / f"docker/{name}/Dockerfile").read_text()
-        if (
-            "go mod verify" not in recipe
-            or "sha256sum -c /tmp/locks.sha256" not in recipe
-        ):
-            raise ValueError("Missing Go lock verification")
-        if name != "caddy" and "go build -mod=readonly" not in recipe:
-            raise ValueError("Go build must be readonly")
-    for name in ("go", "caddy", "postgres", "redis"):
-        recipe = (root / f"docker/{name}/Dockerfile").read_text()
-        if "apk upgrade --no-cache" not in recipe:
-            raise ValueError("Missing approved Alpine preparation")
-        urls = re.findall(r"https?://[^\s'\\]+", recipe)
-        if any(
-            url not in [*trusted["alpine"]["repositories"], trusted["go"]["proxy"]]
-            for url in urls
-        ):
-            raise ValueError("Unapproved Alpine repository")
     source = (root / "docker/python/debian.sources").read_text()
     for block in source.strip().split("\n\n"):
         fields = dict(line.split(": ", 1) for line in block.splitlines())
@@ -640,7 +626,7 @@ def platform_digest(index: dict[str, Any], architecture: str = "amd64") -> str:
 class VulnerableImage(ValueError):
     def __init__(self, findings: list[dict[str, Any]]) -> None:
         self.findings = findings
-        super().__init__(f"Blocking HIGH/CRITICAL vulnerabilities: {findings}")
+        super().__init__(f"Blocking vulnerabilities: {findings}")
 
 
 def check_scan(report: dict[str, Any], identity: str, status: int) -> None:
@@ -781,15 +767,17 @@ def local_identity(reference: str, target: str = PLATFORM) -> dict[str, Any]:
     return result
 
 
-def scanner(root: Path, *args: str, offline: bool = False) -> int:
+def scanner(
+    root: Path, *args: str, offline: bool = False, database: Path | None = None
+) -> int:
     check_scanner_policy(root)
-    cache = root / ".cache/trivy"
+    cache = database if database is not None else trivy_database()
     cache.mkdir(parents=True, exist_ok=True)
     socket = Path("/var/run/docker.sock")
     socket_group = str(socket.stat().st_gid) if socket.exists() else "0"
     # Use a pinned tool container and its normal DB update semantics. No inherited
     # TRIVY_* variables, ignore files or user configuration enter the container.
-    return subprocess.run(
+    status = subprocess.run(
         [
             "docker",
             "run",
@@ -815,6 +803,14 @@ def scanner(root: Path, *args: str, offline: bool = False) -> int:
         cwd=root,
         check=False,
     ).returncode
+    if args and args[0] == "image" and status in {0, 42}:
+        metadata = check_trivy_database(cache)
+        output = root / "reports/images"
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "trivy-db-metadata.json").write_text(
+            json.dumps(metadata, indent=2) + "\n"
+        )
+    return status
 
 
 def installed_packages(identity: str) -> dict[str, dict[str, str]]:
@@ -839,6 +835,37 @@ def installed_packages(identity: str) -> dict[str, dict[str, str]]:
             code,
         )
     )
+
+
+GO_ROOTS = {
+    "builder": (
+        "github.com/caddyserver/xcaddy/cmd/xcaddy",
+        "github.com/caddyserver/xcaddy",
+        "v0.4.7",
+    ),
+    "caddy": ("caddy", "caddy", "(devel)"),
+    "postgres": (
+        "github.com/tianon/gosu",
+        "github.com/tianon/gosu",
+        "v0.0.0-20261025094355-29b939aa5bd4",
+    ),
+}
+
+
+def check_go_identity(info: str, family: str) -> None:
+    lines = [line.split() for line in info.splitlines()]
+    path, module, version = GO_ROOTS[family]
+    if (
+        not lines
+        or lines[0][-1] != "go1.27.4"
+        or [fields[1:] for fields in lines if fields[0] == "path"] != [[path]]
+        or [fields[1:3] for fields in lines if fields[0] == "mod"]
+        != [[module, version]]
+        or family == "caddy"
+        and ("github.com/caddyserver/caddy/v2", "v2.11.9")
+        not in go_packages(info).items()
+    ):
+        raise ValueError("Unapproved Go binary path, module or toolchain")
 
 
 def go_packages(text: str) -> dict[str, str]:
@@ -923,6 +950,7 @@ def actual_inventory(
         "builder": "/usr/local/bin/xcaddy",
         "caddy": "/usr/bin/caddy",
         "postgres": "/usr/local/bin/gosu",
+        "mailpit": "/mailpit",
     }.get(family)
     if binary and builder is not None:
         with tempfile.TemporaryDirectory(dir=root) as directory:
@@ -946,8 +974,32 @@ def actual_inventory(
                 "-m",
                 "/binary",
             )
-        (root / "reports/images" / (family + ".binary")).unlink(missing_ok=True)
         (root / "reports/images" / (family + ".buildinfo.txt")).write_text(info + "\n")
+        if family == "mailpit":
+            banner = command(
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--entrypoint",
+                "/mailpit",
+                identity,
+                "version",
+                "--no-release-check",
+            )
+            match = re.search(r"\bv([0-9.]+) compiled with go([0-9.]+) on", banner)
+            packages = go_packages(info)
+            version = packages.get("github.com/axllent/mailpit", "")
+            if (
+                match is None
+                or version.split("+", 1)[0] != "v" + match[1]
+                or packages.get("stdlib") != "v" + match[2]
+            ):
+                raise ValueError("Mailpit binary and Go component inventory disagree")
+            inventory["principal"] = {"github.com/axllent/mailpit": version}
+        else:
+            check_go_identity(info, family)
         inventory["go"] = go_packages(info)
     return inventory
 
@@ -1244,7 +1296,7 @@ def run_pipeline(
             not verify or item["scanner_status"] != 0 or not grype_passes(root, item)
         ):
             item = build("redis", "redis", {name: item["selected"]}, [])
-        inventory(name, item, "redis" if name == "REDIS_IMAGE" else "service")
+        inventory(name, item, "redis" if name == "REDIS_IMAGE" else "mailpit", builder)
         evidence["effective"][name] = item
     application = build(
         "application", "api", {"PREPARED_IMAGE": python["reference"]}, [python]

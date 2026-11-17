@@ -157,35 +157,90 @@ def test_grype_execution_association_and_suppression_fail(mutation: str) -> None
     "mutation", ["missing", "extra", "unscanned", "sbom", "association"]
 )
 def test_effective_coverage_rejected_at_pipeline_boundary(
-    mutation: str, tmp_path: Path
+    mutation: str, configured: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Expected roles come from recipes and service pins, not reported evidence.
+    identity, grype = grype_report()
     item = {
-        "image_id": "sha256:" + "a" * 64,
+        "image_id": identity["Id"],
+        "docker": identity,
         "reference": "test",
+        "selected": "test",
         "scan": "t.json",
         "grype_scan": "g.json",
         "sbom": "bom.json",
+        "trivy_sbom": "t-bom.json",
         "installed": {"os": {"libc": "1"}},
         "scanner_status": 0,
         "grype_status": 0,
     }
-    evidence: dict[str, Any] = {
-        "effective": {k: copy.deepcopy(item) for k in images.expected_effective()},
-        "builds": {},
+    (configured / "t.json").write_text(
+        json.dumps(
+            {"SchemaVersion": 2, "Metadata": {"ImageID": identity["Id"]}, "Results": []}
+        )
+    )
+    (configured / "g.json").write_text(json.dumps(grype))
+    bom = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.7",
+        "version": 1,
+        "metadata": {
+            "component": {
+                "version": "a" * 64,
+                "properties": [
+                    {"name": "aquasecurity:trivy:ImageID", "value": identity["Id"]}
+                ],
+            }
+        },
+        "components": [{"name": "libc", "version": "1", "type": "library"}],
     }
+    for path in ("bom.json", "t-bom.json"):
+        (configured / path).write_text(json.dumps(bom))
+
+    def inspect(reference: str) -> dict[str, Any]:
+        return identity
+
+    monkeypatch.setattr(images, "local_identity", inspect)
+    evidence: dict[str, Any] = {
+        "effective": {
+            k: copy.deepcopy(item) for k in images.expected_effective(configured)
+        },
+        "builds": {
+            k: {
+                "image_id": identity["Id"],
+                "recipe": recipe,
+                "arguments": {key: "test" for key in keys},
+            }
+            for recipe, keys in images.RECIPES.items()
+            for k in [
+                "builder"
+                if recipe == "go"
+                else "application"
+                if recipe == "api"
+                else recipe
+            ]
+        },
+        "inputs": {
+            k: copy.deepcopy(item) for k in images.check_configuration(configured)
+        },
+    }
+    images.check_effective_coverage(configured, evidence)
     if mutation == "missing":
         evidence["effective"].pop("python")
+        expected = "coverage"
     elif mutation == "extra":
         evidence["effective"]["surprise"] = item
+        expected = "coverage"
     elif mutation == "unscanned":
-        del evidence["effective"]["python"]["grype_scan"]
+        (configured / "g.json").unlink()
+        expected = "g.json"
     elif mutation == "sbom":
-        del evidence["effective"]["python"]["sbom"]
+        (configured / "bom.json").unlink()
+        expected = "bom.json"
     else:
         evidence["effective"]["python"]["image_id"] = "wrong"
-    with pytest.raises((ValueError, OSError, KeyError)):
-        images.check_effective_coverage(tmp_path, evidence)
+        expected = "association"
+    with pytest.raises((ValueError, OSError), match=expected):
+        images.check_effective_coverage(configured, evidence)
 
 
 @pytest.mark.req("NFR-026", kind="configuration check", part="scanner-policy-rejection")

@@ -485,6 +485,9 @@ def test_real_trivy_missing_database_is_fatal(
         metadata = database / "db/metadata.json"
         data = json.loads(metadata.read_text())
         data["NextUpdate"] = "2000-01-01T00:00:00Z"
+        # Trivy also permits one hour of same-run reuse after a download.
+        # Expire that interval so this fixture requires a successful update.
+        data["DownloadedAt"] = "2000-01-01T00:00:00Z"
         metadata.write_text(json.dumps(data))
     elif failure == "unusable":
         (database / "db").mkdir(parents=True)

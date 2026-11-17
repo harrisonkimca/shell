@@ -125,11 +125,12 @@ def test_grype_fix_states_fail_closed(state: str, severity: str) -> None:
 
 
 @pytest.mark.parametrize("state", ["not-fixed", "wont-fix"])
+@pytest.mark.parametrize("severity", ["High", "Critical", "Unknown"])
 @pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
-def test_grype_approved_unfixed_states_retained(state: str) -> None:
+def test_grype_approved_unfixed_states_retained(state: str, severity: str) -> None:
     identity, report = grype_report()
     report["matches"] = [
-        {"vulnerability": {"severity": "High", "fix": {"state": state}}}
+        {"vulnerability": {"severity": severity, "fix": {"state": state}}}
     ]
     images.check_grype(report, identity, 0)
 

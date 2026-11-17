@@ -265,6 +265,7 @@ RECIPES = {
     "redis": ("REDIS_IMAGE",),
 }
 LOCAL = {"BUILDER_IMAGE": "local:builder", "PREPARED_IMAGE": "local:python"}
+ROLE_NAMES = {"go": "builder", "api": "application", "redis": "REDIS_IMAGE"}
 REMEDIATIONS = {
     "PYTHON_IMAGE": "docker.io/library/python",
     "CADDY_IMAGE": "docker.io/library/caddy",
@@ -1333,16 +1334,7 @@ def grype_passes(root: Path, item: dict[str, Any]) -> bool:
 def expected_effective(root: Path = ROOT) -> set[str]:
     pins = check_configuration(root)
     consumed = {k for keys in RECIPES.values() for k in keys}
-    return {
-        "builder"
-        if name == "go"
-        else "application"
-        if name == "api"
-        else "REDIS_IMAGE"
-        if name == "redis"
-        else name
-        for name in RECIPES
-    } | (pins.keys() - consumed)
+    return {ROLE_NAMES.get(name, name) for name in RECIPES} | (pins.keys() - consumed)
 
 
 def check_effective_coverage(root: Path, evidence: dict[str, Any]) -> None:
@@ -1350,10 +1342,8 @@ def check_effective_coverage(root: Path, evidence: dict[str, Any]) -> None:
     check_coverage(expected, evidence["effective"])
     for role in expected:
         item = evidence["effective"][role]
-        recipe = {"builder": "go", "application": "api", "REDIS_IMAGE": "redis"}.get(
-            role, role
-        )
-        build_name = "redis" if role == "REDIS_IMAGE" else role
+        recipe = {value: key for key, value in ROLE_NAMES.items()}.get(role, role)
+        build_name = recipe if role == ROLE_NAMES["redis"] else role
         if build_name in evidence["builds"]:
             build = evidence["builds"][build_name]
             if build["image_id"] != item["image_id"] or build["recipe"] != recipe:

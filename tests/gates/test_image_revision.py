@@ -236,3 +236,9 @@ def test_grype_inventory_rejection(tmp_path: Path, mutation: str) -> None:
     with pytest.raises(ValueError):
         packages = images.check_grype_sbom(path, identity)
         images.check_installed(packages, {"principal": {"python": "3.13.18"}})
+
+
+def test_caddy_keeps_upstream_permitted_only_file_capability() -> None:
+    recipe = (images.ROOT / "docker/caddy/Dockerfile").read_text()
+    assert "setcap cap_net_bind_service=+p /usr/bin/caddy" in recipe
+    assert "--chown=1001:1001" in recipe

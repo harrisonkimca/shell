@@ -293,6 +293,7 @@ def check_run(tokens: list[str]) -> None:
             "python",
             "rm",
             "mkdir",
+            "sort",
             "sha256sum",
             "cmp",
             "go",

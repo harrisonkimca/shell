@@ -185,11 +185,19 @@ def test_services_preserve_modules_entrypoint_and_privilege_behavior(
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         member = tar.getmembers()[0]
         assert (member.uid, member.gid) == (1001, 1001)
+        expected_capability = member.pax_headers["SCHILY.xattr.security.capability"]
         data = tar.extractfile(member)
         assert data is not None
         binary = tmp_path / "upstream-caddy"
         binary.write_bytes(data.read())
         binary.chmod(0o755)
+    with tarfile.open(
+        fileobj=io.BytesIO(extracted(caddy["image_id"], "/usr/bin/caddy"))
+    ) as tar:
+        assert (
+            tar.getmembers()[0].pax_headers["SCHILY.xattr.security.capability"]
+            == expected_capability
+        )
     args = ["list-modules", "--versions"]
     expected = images.command(
         "docker",

@@ -41,7 +41,12 @@ def configured(tmp_path: Path) -> Path:
 @pytest.mark.parametrize(
     "mutation",
     [
-        "mutable",
+        pytest.param(
+            "mutable",
+            marks=pytest.mark.req(
+                "NFR-026", kind="configuration check", part="image-pins"
+            ),
+        ),
         "repository",
         "registry-lookalike",
         "index",
@@ -115,6 +120,7 @@ def test_unapproved_or_unpinned_inputs_rejected(
         images.check_configuration(configured)
 
 
+@pytest.mark.req("NFR-024", kind="configuration check", part="trusted-sources")
 def test_repository_normalization_is_exact() -> None:
     assert (
         images.repository("python:3.13@sha256:" + "a" * 64)
@@ -229,6 +235,7 @@ def test_missing_image_evidence_fails() -> None:
         images.check_coverage({"one", "two"}, {"one": {}})
 
 
+@pytest.mark.req("NFR-024", kind="configuration check", part="image-sbom")
 def test_cyclonedx_17_keeps_versions_and_grouping_nodes(tmp_path: Path) -> None:
     identity = "sha256:" + "a" * 64
     bom: dict[str, Any] = {
@@ -291,6 +298,7 @@ def test_only_approved_upstreams_may_enter_preparation(name: str) -> None:
         images.check_scan(report, identity, 42)
 
 
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_loaded_build_identity_rejects_a_different_image() -> None:
     with pytest.raises(ValueError, match="identity"):
         images.check_build_identity(
@@ -298,6 +306,7 @@ def test_loaded_build_identity_rejects_a_different_image() -> None:
         )
 
 
+@pytest.mark.req("NFR-024", kind="configuration check", part="image-sbom")
 def test_os_inventory_retains_distribution_epoch_and_release() -> None:
     assert (
         images.package_version({"Epoch": 1, "Version": "1.3.1", "Release": "1+deb13u1"})
@@ -306,6 +315,7 @@ def test_os_inventory_retains_distribution_epoch_and_release() -> None:
     assert images.package_version({"Version": "3.24.4-r0"}) == "3.24.4-r0"
 
 
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_vulnerable_effective_input_stops_before_dependent_use(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -338,6 +348,7 @@ def test_vulnerable_effective_input_stops_before_dependent_use(
 @pytest.mark.parametrize(
     "mutation", ["go-source", "go-version", "debian", "toolchain", "raw-app"]
 )
+@pytest.mark.req("NFR-024", kind="configuration check", part="source-rejection")
 def test_additional_sources_and_boundaries_are_enforced(
     configured: Path, mutation: str
 ) -> None:
@@ -364,6 +375,7 @@ def test_additional_sources_and_boundaries_are_enforced(
 
 
 @pytest.mark.parametrize("architecture", ["amd64", "arm64"])
+@pytest.mark.req("NFR-026", kind="configuration check", part="image-pins")
 def test_identity_inspection_works_with_ci_docker_cli(
     monkeypatch: pytest.MonkeyPatch, architecture: str
 ) -> None:
@@ -379,6 +391,7 @@ def test_identity_inspection_works_with_ci_docker_cli(
             images.local_identity("sha256:" + "a" * 64)
 
 
+@pytest.mark.req("NFR-024", kind="configuration check", part="image-sbom")
 def test_xcaddy_local_main_wrapper_still_requires_versioned_caddy_library(
     tmp_path: Path,
 ) -> None:
@@ -422,6 +435,7 @@ def test_xcaddy_local_main_wrapper_still_requires_versioned_caddy_library(
         images.check_sbom(path, identity)
 
 
+@pytest.mark.req("NFR-024", kind="configuration check", part="image-sbom")
 def test_native_inventory_accepts_only_the_unversioned_local_caddy_wrapper() -> None:
     wrapper = {
         "Name": "caddy",

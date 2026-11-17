@@ -781,3 +781,17 @@ def test_removing_required_rejection_evidence_fails(part: str) -> None:
     assert removed
     with pytest.raises(ValueError, match="required"):
         gate.require_now(required - removed, ROOT)
+
+
+def test_removing_a_required_test_case_fails_even_with_other_passing_evidence() -> None:
+    collected = gate.collect_tests(ROOT)
+    gate.require_cases(collected, ROOT)
+    # Every enrolled test family is mandatory, including each parameter case.
+    # Removing one case must not be concealed by another passing test/parameter.
+    for nodeid, associations in collected.items():
+        if associations:
+            remaining = {
+                key: value for key, value in collected.items() if key != nodeid
+            }
+            with pytest.raises(ValueError, match="required test cases"):
+                gate.require_cases(remaining, ROOT)

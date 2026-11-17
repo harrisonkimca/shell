@@ -477,7 +477,7 @@ def test_pipeline_evidence_is_independently_complete(
     assert references["postgres"] == supply_chain["effective"]["postgres"]["image_id"]
 
 
-@pytest.mark.req("NFR-024", kind="configuration check", part="image-sbom")
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_caddy_nonroot_binds_privileged_port(
     supply_chain: dict[str, Any], tmp_path: Path
 ) -> None:

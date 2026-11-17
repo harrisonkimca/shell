@@ -125,6 +125,7 @@ def test_grype_fix_states_fail_closed(state: str, severity: str) -> None:
 
 
 @pytest.mark.parametrize("state", ["not-fixed", "wont-fix"])
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_grype_approved_unfixed_states_retained(state: str) -> None:
     identity, report = grype_report()
     report["matches"] = [
@@ -224,7 +225,7 @@ def test_grype_inventory_rejection(tmp_path: Path, mutation: str) -> None:
         "components": [{"type": "application", "name": "python", "version": "3.13.18"}],
     }
     if mutation == "missing-principal":
-        bom["components"] = []
+        bom["components"] = [{"type": "library", "name": "libc", "version": "1"}]
     if mutation == "version":
         bom["components"][0]["version"] = "3.13.0"
     if mutation == "missing-version":
@@ -238,6 +239,7 @@ def test_grype_inventory_rejection(tmp_path: Path, mutation: str) -> None:
         images.check_installed(packages, {"principal": {"python": "3.13.18"}})
 
 
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
 def test_caddy_keeps_upstream_permitted_only_file_capability() -> None:
     recipe = (images.ROOT / "docker/caddy/Dockerfile").read_text()
     assert "setcap cap_net_bind_service=+p /usr/bin/caddy" in recipe

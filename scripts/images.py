@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import tomllib
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import UTC, datetime
@@ -626,6 +627,52 @@ class VulnerableImage(ValueError):
         super().__init__(f"Blocking vulnerabilities: {findings}")
 
 
+def debian_unfixed(
+    report: dict[str, Any], result: dict[str, Any], finding: dict[str, Any]
+) -> bool:
+    # Trivy 0.76.2's pinned trivy-db cbebf2ecd6df Debian converter maps both
+    # no-dsa and unfixed to affected. This is a known unfixed state, not an
+    # unknown fix state. Accept it only for an image-bound Debian OS result and
+    # its matching native installed package; never infer it from severity alone.
+    distribution = report.get("Metadata", {}).get("OS", {})
+    release = distribution.get("Name", "")
+    if (
+        finding.get("Status") != "affected"
+        or finding.get("FixedVersion", "") != ""
+        or distribution.get("Family") != "debian"
+        or not isinstance(release, str)
+        or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", release)
+        or result.get("Class") != "os-pkgs"
+        or result.get("Type") != "debian"
+        or finding.get("DataSource")
+        != {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker",
+        }
+    ):
+        return False
+    purl = finding.get("PkgIdentifier", {}).get("PURL", "")
+    if not isinstance(purl, str):
+        return False
+    parsed = urllib.parse.urlsplit(purl)
+    if (
+        parsed.scheme != "pkg"
+        or urllib.parse.unquote(parsed.path)
+        != f"deb/debian/{finding.get('PkgName')}@{finding.get('InstalledVersion')}"
+        or urllib.parse.parse_qs(parsed.query).get("distro") != ["debian-" + release]
+    ):
+        return False
+    return any(
+        package.get("ID") == finding.get("PkgID")
+        and package.get("Name") == finding.get("PkgName")
+        and package.get("Version")
+        and package_version(package) == finding.get("InstalledVersion")
+        and package.get("Identifier", {}).get("PURL") == purl
+        for package in result.get("Packages", [])
+    )
+
+
 def check_scan(report: dict[str, Any], identity: str, status: int) -> None:
     if status not in (0, 42):
         raise ValueError(f"Scanner error: exit {status}")
@@ -646,6 +693,7 @@ def check_scan(report: dict[str, Any], identity: str, status: int) -> None:
                 v.get("FixedVersion")
                 or v.get("Status")
                 not in {"will_not_fix", "end_of_life", "not_affected"}
+                and not debian_unfixed(report, result, v)
             )
         )
     ]

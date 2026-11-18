@@ -8,7 +8,7 @@ RUN sha256sum go.mod go.sum > /tmp/locks.sha256 \
  && go mod download all && go mod verify \
  && sha256sum -c /tmp/locks.sha256 \
  && mkdir -p /out \
- && GOPROXY=off GOOS=linux GOARCH=${TARGETARCH} XCADDY_SKIP_CLEANUP=1 xcaddy build v2.11.9 --replace golang.org/x/net=golang.org/x/net@v0.62.0 --replace github.com/klauspost/compress=github.com/klauspost/compress@v1.20.2 --output /out/caddy \
+ && GOPROXY=off GOOS=linux GOARCH=${TARGETARCH} XCADDY_SKIP_CLEANUP=1 xcaddy build v2.11.9 --replace golang.org/x/net=golang.org/x/net@v0.62.0 --replace github.com/klauspost/compress=github.com/klauspost/compress@v1.20.3 --replace github.com/smallstep/certificates=github.com/smallstep/certificates@v0.30.3-0.20261105213751-6d5a251fbe01 --replace golang.org/x/crypto=golang.org/x/crypto@v0.59.0 --output /out/caddy \
  && sort go.mod > /tmp/locked.mod \
  && sort /tmp/buildenv*/go.mod > /tmp/effective.mod \
  && cmp /tmp/locked.mod /tmp/effective.mod \

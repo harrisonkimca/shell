@@ -340,7 +340,10 @@ SUPPORTED_BUILDS = {
             "-p /out  && GOPROXY=off GOOS=linux GOARCH=${TARGETARCH} "
             "XCADDY_SKIP_CLEANUP=1 xcaddy build v2.11.9 --replace "
             "golang.org/x/net=golang.org/x/net@v0.62.0 --replace "
-            "github.com/klauspost/compress=github.com/klauspost/compress@v1.20.2"
+            "github.com/klauspost/compress=github.com/klauspost/compress@v1.20.3"
+            " --replace github.com/smallstep/certificates="
+            "github.com/smallstep/certificates@v0.30.3-0.20261105213751-6d5a251fbe01"
+            " --replace golang.org/x/crypto=golang.org/x/crypto@v0.59.0"
             " --output /out/caddy  && sort go.mod > /tmp/locked.mod  && sort "
             "/tmp/buildenv*/go.mod > /tmp/effective.mod  && cmp /tmp/locked.mod "
             "/tmp/effective.mod  && sha256sum -c /tmp/locks.sha256"
@@ -500,10 +503,16 @@ def check_source_files(root: Path, trusted: dict[str, Any]) -> None:
             if name == "caddy" and path in {
                 "golang.org/x/net",
                 "github.com/klauspost/compress",
+                "github.com/smallstep/certificates",
+                "golang.org/x/crypto",
             }:
                 version = {
                     "golang.org/x/net": "v0.62.0",
-                    "github.com/klauspost/compress": "v1.20.2",
+                    "github.com/klauspost/compress": "v1.20.3",
+                    "github.com/smallstep/certificates": (
+                        "v0.30.3-0.20261105213751-6d5a251fbe01"
+                    ),
+                    "golang.org/x/crypto": "v0.59.0",
                 }[path]
             if not any(line.startswith(f"{path} {version} h1:") for line in sums):
                 raise ValueError("Go dependency missing locked checksum")
@@ -516,7 +525,11 @@ def check_source_files(root: Path, trusted: dict[str, Any]) -> None:
             [
                 "replace golang.org/x/net => golang.org/x/net v0.62.0",
                 "replace github.com/klauspost/compress => "
-                "github.com/klauspost/compress v1.20.2",
+                "github.com/klauspost/compress v1.20.3",
+                "replace github.com/smallstep/certificates => "
+                "github.com/smallstep/certificates "
+                "v0.30.3-0.20261105213751-6d5a251fbe01",
+                "replace golang.org/x/crypto => golang.org/x/crypto v0.59.0",
             ]
             if name == "caddy"
             else []
@@ -924,6 +937,8 @@ def check_go_identity(info: str, family: str) -> None:
         not in go_packages(info).items()
     ):
         raise ValueError("Unapproved Go binary path, module or toolchain")
+    if family == "caddy" and "github.com/go-jose/go-jose/v3" in go_packages(info):
+        raise ValueError("Caddy binary contains go-jose v3")
 
 
 def go_packages(text: str) -> dict[str, str]:

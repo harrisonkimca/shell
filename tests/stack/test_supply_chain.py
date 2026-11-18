@@ -110,9 +110,11 @@ def extracted(identity: str, path: str) -> bytes:
 
 
 @contextmanager
-def running(reference: str, *options: str) -> Iterator[str]:
+def running(
+    reference: str, *options: str, command: tuple[str, ...] = ()
+) -> Iterator[str]:
     name = "shell-supply-chain-" + uuid.uuid4().hex[:12]
-    images.command("docker", "run", "-d", "--name", name, *options, reference)
+    images.command("docker", "run", "-d", "--name", name, *options, reference, *command)
     try:
         yield name
     finally:
@@ -559,4 +561,161 @@ def test_caddy_nonroot_binds_privileged_port(
     ) as name:
         assert "capability works" in wait_command(
             name, "wget", "-qO-", "http://127.0.0.1/"
+        )
+
+
+@pytest.mark.req("NFR-024", kind="configuration check", part="image-sbom")
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
+def test_caddy_migration_matches_binary_and_both_inventories(
+    supply_chain: dict[str, Any],
+) -> None:
+    item = supply_chain["effective"]["caddy"]
+    installed = item["installed"]["go"]
+    for module, version in {
+        "github.com/caddyserver/caddy/v2": "v2.11.9",
+        "github.com/smallstep/certificates": "v0.30.3-0.20261105213751-6d5a251fbe01",
+        "go.step.sm/crypto": "v0.92.0",
+        "github.com/smallstep/cli-utils": "v0.13.0",
+        "github.com/go-jose/go-jose/v4": "v4.1.9",
+        "golang.org/x/crypto": "v0.59.0",
+    }.items():
+        assert installed[module] == version
+    assert "github.com/go-jose/go-jose/v3" not in installed
+    for packages in (
+        images.check_grype_sbom(ROOT / item["sbom"], item["image_id"]),
+        images.check_sbom(ROOT / item["trivy_sbom"], item["image_id"]),
+    ):
+        assert ("github.com/go-jose/go-jose/v4", "v4.1.9") in packages
+        assert not any(name == "github.com/go-jose/go-jose/v3" for name, _ in packages)
+
+
+@pytest.mark.req("NFR-026", kind="configuration check", part="build-scans")
+def test_caddy_migrated_internal_ca_serves_verified_https(
+    supply_chain: dict[str, Any], tmp_path: Path
+) -> None:
+    caddy = supply_chain["effective"]["caddy"]
+    application = supply_chain["effective"]["application"]
+    config: dict[str, Any] = {
+        "admin": {"disabled": True},
+        "apps": {
+            "pki": {"certificate_authorities": {"local": {"install_trust": False}}},
+            "tls": {
+                "automation": {
+                    "policies": [
+                        {
+                            "subjects": ["localhost"],
+                            "issuers": [{"module": "internal", "ca": "local"}],
+                        }
+                    ]
+                }
+            },
+            "http": {
+                "servers": {
+                    "https": {
+                        "listen": [":8443"],
+                        "routes": [
+                            {
+                                "match": [{"host": ["localhost"]}],
+                                "handle": [
+                                    {"handler": "static_response", "body": "compat-tls"}
+                                ],
+                            }
+                        ],
+                        "tls_connection_policies": [{}],
+                        "automatic_https": {"disable_redirects": True},
+                    },
+                    "plain": {
+                        "listen": [":80"],
+                        "routes": [
+                            {
+                                "handle": [
+                                    {
+                                        "handler": "static_response",
+                                        "body": "compat-http",
+                                    }
+                                ]
+                            }
+                        ],
+                    },
+                }
+            },
+        },
+    }
+    path = tmp_path / "caddy.json"
+    path.write_text(json.dumps(config))
+    with running(
+        caddy["image_id"],
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "1001:1001",
+        "--cap-drop",
+        "ALL",
+        "--cap-add",
+        "NET_BIND_SERVICE",
+        "--security-opt",
+        "no-new-privileges",
+        "--sysctl",
+        "net.ipv4.ip_unprivileged_port_start=1024",
+        "--tmpfs",
+        "/data:uid=1001,gid=1001,mode=0700",
+        "--tmpfs",
+        "/config:uid=1001,gid=1001,mode=0700",
+        "-v",
+        f"{path}:/runtime.json:ro",
+        command=("caddy", "run", "--config", "/runtime.json"),
+    ) as name:
+        assert_container_identity(name, caddy)
+        assert wait_command(name, "wget", "-qO-", "http://127.0.0.1/") == "compat-http"
+        cert = tmp_path / "root.crt"
+        cert.write_text(
+            wait_command(name, "cat", "/data/caddy/pki/authorities/local/root.crt")
+            + "\n"
+        )
+        code = (
+            "import ssl,urllib.request,urllib.error\n"
+            "url='https://localhost:8443/'\n"
+            "try: urllib.request.urlopen(url,timeout=5)\n"
+            "except urllib.error.URLError as e:\n"
+            " assert isinstance(e.reason,ssl.SSLCertVerificationError)\n"
+            "else: raise AssertionError('Untrusted CA was accepted')\n"
+            "context=ssl.create_default_context(cafile='/root.crt')\n"
+            "assert context.check_hostname and context.verify_mode==ssl.CERT_REQUIRED\n"
+            "response=urllib.request.urlopen(url,context=context,timeout=5)\n"
+            "assert response.read()==b'compat-tls'\n"
+            "print('Verified internal-CA HTTPS')\n"
+        )
+        assert (
+            images.command(
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "container:" + name,
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "-v",
+                f"{cert}:/root.crt:ro",
+                application["image_id"],
+                "python",
+                "-c",
+                code,
+            )
+            == "Verified internal-CA HTTPS"
+        )
+        (ROOT / "reports/images/caddy-https.json").write_text(
+            json.dumps(
+                {
+                    "caddy": caddy["image_id"],
+                    "client": application["image_id"],
+                    "untrusted_ca_rejected": True,
+                    "trusted_ca_verified": True,
+                    "port_80_nonroot": True,
+                }
+            )
+            + "\n"
         )

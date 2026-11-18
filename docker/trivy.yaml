@@ -1,0 +1,12 @@
+# No ignore files, VEX or severity exceptions. Keep ordinary DB freshness.
+scan:
+  scanners:
+    - vuln
+  list-all-pkgs: true
+severity:
+  - HIGH
+  - CRITICAL
+vulnerability:
+  ignore-unfixed: true
+exit-code: 42
+timeout: 10m

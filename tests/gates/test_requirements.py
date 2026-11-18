@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -15,7 +16,7 @@ from scripts import check_requirements as gate
 ROOT = Path(__file__).resolve().parents[2]
 SHA = "a" * 40
 CONTEXT = {"tested_revision": SHA, "run_id": "123", "run_attempt": "2"}
-ASSOCIATION = ("NFR-011", "configuration check", "dependency-locks")
+ASSOCIATION = ("NFR-026", "configuration check", "dependency-locks")
 
 
 def collection() -> dict[str, list[tuple[str, str, str]]]:
@@ -48,11 +49,29 @@ def test_normative_catalogue_and_deadlines() -> None:
     assert catalogue["AUTH-IDP-012"][0] == 1
     assert "AUTH-ERROR-002" not in catalogue
     # Fixed supplemental assignments approved in issue #1; not a subject inventory.
-    assert {part for part in parts if part[2]} == {
+    added = {
+        (key, "configuration check", name, 0, False)
+        for key, names in {
+            "NFR-024": [
+                "source-rejection",
+                "coverage-rejection",
+                "inventory-rejection",
+            ],
+            "NFR-026": [
+                "scanner-policy-rejection",
+                "principal-python-rejection",
+                "principal-postgres-rejection",
+                "principal-redis-rejection",
+                "database-rejection",
+            ],
+        }.items()
+        for name in names
+    }
+    assert {part for part in parts if part[2]} == added | {
         ("AUTH-ERROR-001", "unit test", "problem-details", 0, False),
-        ("NFR-011", "configuration check", "dependency-locks", 0, False),
-        ("NFR-011", "configuration check", "image-pins", 0, False),
-        ("NFR-011", "configuration check", "build-scans", 0, False),
+        ("NFR-026", "configuration check", "dependency-locks", 0, False),
+        ("NFR-026", "configuration check", "image-pins", 0, False),
+        ("NFR-026", "configuration check", "build-scans", 0, False),
         ("NFR-013", "configuration check", "database", 0, False),
         ("NFR-013", "configuration check", "schema", 0, False),
         ("NFR-013", "configuration check", "internal-probes", 0, False),
@@ -68,10 +87,12 @@ def test_normative_catalogue_and_deadlines() -> None:
     }
     assert ("NFR-013", "configuration check", "deployment-isolation", 7, True) in parts
     assert gate.due_parts(parts, 0) == {
+        (key, kind, name) for key, kind, name, _, _ in added
+    } | {
         ("AUTH-ERROR-001", "unit test", "problem-details"),
         ASSOCIATION,
-        ("NFR-011", "configuration check", "image-pins"),
-        ("NFR-011", "configuration check", "build-scans"),
+        ("NFR-026", "configuration check", "image-pins"),
+        ("NFR-026", "configuration check", "build-scans"),
         ("NFR-013", "configuration check", "database"),
         ("NFR-013", "configuration check", "schema"),
         ("NFR-013", "configuration check", "internal-probes"),
@@ -164,8 +185,8 @@ def test_incomplete_execution_rejected(tmp_path: Path, mutation: str) -> None:
     [
         ("UNKNOWN-001", "unit test", ""),
         ("AUTH-ERROR-002", "unit test", ""),
-        ("NFR-011", "unit test", "dependency-locks"),
-        ("NFR-011", "configuration check", "unknown"),
+        ("NFR-026", "unit test", "dependency-locks"),
+        ("NFR-026", "configuration check", "unknown"),
         ("NFR-013", "configuration check", "deployment-isolation"),
     ],
 )
@@ -331,7 +352,7 @@ def test_real_pytest_reports(history: Path, mode: str) -> None:
         body = "assert False"
     (directory / "test_cases.py").write_text(
         "import pytest\n"
-        "@pytest.mark.req('NFR-011', kind='configuration check', "
+        "@pytest.mark.req('NFR-026', kind='configuration check', "
         "part='dependency-locks')\n"
         "@pytest.mark.parametrize('value', [1, 2])\n"
         f"{marker}def test_values(value): {body}\n"
@@ -457,7 +478,37 @@ def test_ordinary_runs_keep_real_delivered_evidence() -> None:
     assert {
         ASSOCIATION,
         ("AUTH-ERROR-001", "unit test", "problem-details"),
+        ("NFR-026", "configuration check", "image-pins"),
+        ("NFR-026", "configuration check", "build-scans"),
+        ("NFR-024", "configuration check", "trusted-sources"),
+        ("NFR-024", "configuration check", "image-sbom"),
     } <= associations
+
+
+def test_retired_supply_chain_id_is_invalid_without_moving_deadlines() -> None:
+    catalogue, parts = gate.load_requirements(ROOT)
+    assert "NFR-011" not in catalogue
+    assert catalogue["NFR-026"] == (0, {"configuration check"})
+    assert {(part[2], part[3], part[4]) for part in parts if part[0] == "NFR-026"} == {
+        (name, 0, False)
+        for name in [
+            "scanner-policy-rejection",
+            "principal-python-rejection",
+            "principal-postgres-rejection",
+            "principal-redis-rejection",
+            "database-rejection",
+        ]
+    } | {
+        ("dependency-locks", 0, False),
+        ("image-pins", 0, False),
+        ("build-scans", 0, False),
+    }
+    with pytest.raises(ValueError):
+        gate.validate_associations(
+            {"retired": [("NFR-011", "configuration check", "dependency-locks")]},
+            catalogue,
+            parts,
+        )
 
 
 @pytest.mark.parametrize(
@@ -710,3 +761,63 @@ def test_unknown_stage_tag_only_rejected_when_reachable(history: Path) -> None:
     git(history, "tag", "stage-99")
     with pytest.raises(ValueError, match="Unknown completion stage"):
         gate.tag_floor(history, set(range(9)))
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        "source-rejection",
+        "scanner-policy-rejection",
+        "coverage-rejection",
+        "inventory-rejection",
+        "principal-python-rejection",
+        "principal-postgres-rejection",
+        "principal-redis-rejection",
+        "database-rejection",
+    ],
+)
+def test_removing_required_rejection_evidence_fails(part: str) -> None:
+    required = gate.required_now(ROOT)
+    removed = {a for a in required if a[2] == part}
+    assert removed
+    with pytest.raises(ValueError, match="required"):
+        gate.require_now(required - removed, ROOT)
+
+
+def test_new_requirement_test_needs_no_unrelated_inventory_update(
+    history: Path,
+) -> None:
+    directory = history / "tests"
+    directory.mkdir()
+    shutil.copy(ROOT / "tests/conftest.py", directory / "conftest.py")
+    (history / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+        'junit_family = "legacy"\n'
+        'markers = ["req(*ids, kind, part): requirement association"]\n'
+    )
+    metadata = (ROOT / "tests/requirements.toml").read_bytes()
+    assert b"cases =" not in metadata
+    (directory / "test_added.py").write_text(
+        "import pytest\n"
+        "@pytest.mark.req('AUTH-IDP-012', kind='integration suite', part='')\n"
+        "def test_new_behavior(): assert 1 + 1 == 2\n"
+    )
+    collected = gate.collect_tests(history)
+    catalogue, parts = gate.load_requirements(ROOT)
+    gate.validate_associations(collected, catalogue, parts)
+    path = history / "report.xml"
+    subprocess.run(
+        [sys.executable, "-m", "pytest", f"--junitxml={path}"],
+        cwd=history,
+        check=True,
+        capture_output=True,
+    )
+    context = {
+        "tested_revision": git(history, "rev-parse", "HEAD"),
+        "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
+        "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "local"),
+    }
+    assert gate.read_reports([path], collected, context) == {
+        ("AUTH-IDP-012", "integration suite", "")
+    }
+    assert (ROOT / "tests/requirements.toml").read_bytes() == metadata

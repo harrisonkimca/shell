@@ -184,7 +184,7 @@ Infrastructure
 
 | Technology | Purpose | Note |
 |---|---|---|
-| Docker | Containerization | Images pinned by digest |
+| Docker | Containerization | Digest-pinned upstream inputs; effective images scanned and inventoried |
 | Docker Compose | Local orchestration | Also the default deployment platform |
 | Caddy | TLS proxy and edge rate limits | Built with a rate-limit module; a cloud edge may replace it at deployment |
 | Mailpit | Email capture | Development only |

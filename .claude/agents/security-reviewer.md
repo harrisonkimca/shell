@@ -22,7 +22,7 @@ Look for:
   a hook is down;
 - injection, SSRF, open redirects, unsafe deserialization;
 - a gate change that weakens a security check: a scanner rule ignored, a
-  path excluded, a pin loosened, a supply-chain check skipped (NFR-011).
+  path excluded, a pin loosened, a supply-chain check skipped (NFR-026).
 
 Report only issues with a concrete path to exploitation in a real
 deployment, apart from a weakened security gate, which you always report:

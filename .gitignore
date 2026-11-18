@@ -11,3 +11,4 @@ node_modules/
 .ruff_cache/
 .import_linter_cache/
 reports/
+.cache/

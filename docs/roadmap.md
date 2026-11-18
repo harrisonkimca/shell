@@ -87,7 +87,7 @@ architecture's rules from the first commit.
   Readiness covers the database and schema; signing keys join it
   in stage 2.
 
-**Requirements.** AUTH-ERROR-001; NFR-011, NFR-013, NFR-024.
+**Requirements.** AUTH-ERROR-001; NFR-026, NFR-013, NFR-024.
 
 **Exit criteria.**
 

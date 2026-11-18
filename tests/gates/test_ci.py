@@ -21,7 +21,7 @@ def test_actual_workflow() -> None:
     validate(workflow())
 
 
-@pytest.mark.parametrize("job", ["quality", "requirements"])
+@pytest.mark.parametrize("job", ["quality", "requirements", "stack"])
 @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", None])
 def test_unsuccessful_or_missing_result(job: str, result: str | None) -> None:
     results: dict[str, Any] = {
@@ -39,7 +39,9 @@ def test_successful_results() -> None:
     )
 
 
-@pytest.mark.parametrize("scope", ["workflow", "quality", "requirements", "ci"])
+@pytest.mark.parametrize(
+    "scope", ["workflow", "quality", "stack", "requirements", "ci"]
+)
 @pytest.mark.parametrize("shell", ["true {0}", "bash"])
 @pytest.mark.parametrize(
     "results",
@@ -55,12 +57,14 @@ def test_default_run_shell_rejected(
         validate(data, results)
 
 
-@pytest.mark.parametrize("job", ["quality", "requirements", "ci"])
+@pytest.mark.parametrize("job", ["quality", "stack", "requirements", "ci"])
 @pytest.mark.parametrize("shell", ["true {0}", "bash"])
 def test_required_step_shell_validation(job: str, shell: str) -> None:
     data = workflow()
     command = next(
-        s for s in data["jobs"][job]["steps"] if "scripts/check" in s.get("run", "")
+        s
+        for s in data["jobs"][job]["steps"]
+        if any(name in s.get("run", "") for name in ("scripts/check", "scripts/images"))
     )
     command["shell"] = shell
     if shell == "bash":
@@ -179,7 +183,7 @@ def test_additional_workflow_rejected(tmp_path: Path, extension: str) -> None:
 
 
 def test_verified_uv_release() -> None:
-    # Compared with upstream v6.8.0's commit ref and uv 0.11.23's published
+    # Compared with upstream v6.8.0's commit ref and uv 0.13.8's published
     # linux/amd64 archive SHA-256 (also independently hashed during remediation).
     for job in workflow()["jobs"].values():
         setup = next(
@@ -191,9 +195,9 @@ def test_verified_uv_release() -> None:
             setup["uses"]
             == "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e"
         )
-        assert setup["with"]["version"] == "0.11.23"
+        assert setup["with"]["version"] == "0.13.8"
         assert setup["with"]["checksum"] == (
-            "e12c4cda2fe8c305510a78380a88f2c32a27e90cdcd123cefd2873388f0ebb5f"
+            "5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91"
         )
 
 

@@ -1,0 +1,21 @@
+# Exact repositories, not registry-wide trust. Tools/Actions are pinned separately.
+image-repositories = [
+  "docker.io/library/python",
+  "docker.io/library/caddy",
+  "docker.io/library/postgres",
+  "docker.io/library/redis",
+  "docker.io/axllent/mailpit",
+  "ghcr.io/astral-sh/uv",
+  "docker.io/library/golang",
+]
+package-indexes = ["https://pypi.org/simple"]
+distribution-prefixes = ["https://files.pythonhosted.org/packages/"]
+
+[go]
+proxy = "https://proxy.golang.org"
+sumdb = "sum.golang.org"
+
+[debian]
+repositories = ["http://deb.debian.org/debian", "http://deb.debian.org/debian-security"]
+suites = ["trixie", "trixie-updates", "trixie-security"]
+signed-by = "/usr/share/keyrings/debian-archive-keyring.pgp"
